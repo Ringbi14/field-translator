@@ -49,7 +49,6 @@ HTML_CONTENT = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Field Translator</title>
   
-  <!-- App-like Mobile Tags -->
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#2563eb">
   <meta name="mobile-web-app-capable" content="yes">
@@ -252,7 +251,7 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=[
                 types.Part.from_bytes(data=audio_bytes, mime_type=audio.content_type or 'audio/webm'),
                 prompt
