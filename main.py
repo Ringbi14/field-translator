@@ -7,7 +7,7 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from google import genai
 from google.genai import types
-from gTTS import gTTS
+from gtts import gTTS
 
 app = FastAPI()
 
