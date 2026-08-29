@@ -2,14 +2,12 @@ import os
 import json
 import base64
 import io
-import ssl
 import uvicorn
-import trustme
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from google import genai
 from google.genai import types
-from gtts import gTTS
+from gTTS import gTTS
 
 app = FastAPI()
 
@@ -241,19 +239,5 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
         return {"error": f"Error processing audio: {str(e)}"}
 
 if __name__ == "__main__":
-    # Generate local SSL certs on the fly
-    ca = trustme.CA()
-    cert = ca.issue_cert("localhost", "127.0.0.1", "0.0.0.0", "10.186.72.151")
-    cert.private_key_pem.write_to_path("key.pem")
-    cert.cert_chain_pems[0].write_to_path("cert.pem")
-
-    print("\n\n>>> SERVER STARTED WITH HTTPS <<<")
-    print("Open on your phone: https://10.186.72.151:8080\n\n")
-
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8080,
-        ssl_keyfile="key.pem",
-        ssl_certfile="cert.pem"
-    )
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
