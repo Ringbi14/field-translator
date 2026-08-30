@@ -211,7 +211,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     let recordTimerInterval = null;
     let recordSeconds = 0;
 
-    // Instant Mobile Text-to-Speech Engine
     function speakText(text, lang) {
       if (!text || !('speechSynthesis' in window)) return;
       window.speechSynthesis.cancel();
@@ -221,7 +220,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       window.speechSynthesis.speak(utterance);
     }
 
-    // IndexedDB Database
     let db;
     const dbReq = indexedDB.open('FieldTranslatorDB', 1);
     dbReq.onupgradeneeded = e => {
@@ -287,10 +285,16 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function toggleRecord() {
       if (!isRecording) {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { channelCount: 1, sampleRate: 16000 }
-          });
-          mediaRecorder = new MediaRecorder(stream);
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          
+          let mimeType = 'audio/webm';
+          if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+            mimeType = 'audio/webm;codecs=opus';
+          } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+            mimeType = 'audio/mp4';
+          }
+
+          mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
           audioChunks = [];
           mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
           mediaRecorder.onstop = handleRecordingComplete;
@@ -339,7 +343,8 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     async function handleRecordingComplete() {
-      const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+      const mime = mediaRecorder.mimeType || 'audio/webm';
+      const audioBlob = new Blob(audioChunks, { type: mime });
       processAndSaveAudio(audioBlob, currentDirection);
     }
 
@@ -375,7 +380,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       const formData = new FormData();
-      formData.append('audio', blobOrFile, 'speech.webm');
+      formData.append('audio', blobOrFile, blobOrFile.name || 'speech.webm');
       formData.append('direction', direction);
 
       try {
@@ -600,36 +605,37 @@ async def serve_ui():
 @app.post("/translate-audio")
 async def translate_audio(audio: UploadFile = File(...), direction: str = Form(...)):
     audio_bytes = await audio.read()
+    mime = audio.content_type or 'audio/webm'
     
     if direction == "ta_to_en":
         prompt = (
-            "Fieldwork Tamil-to-English translation. "
+            "Fieldwork Tamil-to-English translator. "
             "1. Transcribe colloquial spoken Tamil. "
-            "2. Translate into clean, natural conversational English. "
-            "Output JSON with keys: 'spoken', 'translation', 'pronunciation' (empty string)."
+            "2. Translate meaning into natural conversational English. "
+            "Output JSON with keys: spoken, translation, pronunciation (leave pronunciation empty string)."
         )
     else:
         prompt = (
-            "Fieldwork English-to-Tamil translation. "
-            "1. Translate into natural, polite colloquial spoken Tamil (Pechu Tamizh). "
-            "2. Provide phonetic Tanglish pronunciation in Latin letters. "
-            "Output JSON with keys: 'spoken', 'translation', 'pronunciation'."
+            "Fieldwork English-to-Tamil translator. "
+            "1. Translate English into polite everyday spoken Tamil (Pechu Tamizh). "
+            "2. Provide Tanglish phonetic pronunciation. "
+            "Output JSON with keys: spoken, translation, pronunciation."
         )
 
     try:
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=[
-                types.Part.from_bytes(data=audio_bytes, mime_type=audio.content_type or 'audio/webm'),
+                types.Part.from_bytes(data=audio_bytes, mime_type=mime),
                 prompt
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 temperature=0.2,
-                max_output_tokens=150
+                max_output_tokens=800
             )
         )
-        return json.loads(response.text)
+        return json.loads(response.text.strip())
     except Exception as e:
         return {"error": f"Audio processing error: {str(e)}"}
 
@@ -638,12 +644,12 @@ async def translate_text(text: str = Form(...), direction: str = Form(...)):
     if direction == "ta_to_en":
         prompt = (
             f"Translate spoken Tamil to conversational English: '{text}'. "
-            "Output JSON with keys: 'spoken', 'translation', 'pronunciation' (empty string)."
+            "Output JSON with keys: spoken, translation, pronunciation (leave pronunciation empty string)."
         )
     else:
         prompt = (
             f"Translate English to polite spoken Tamil with Tanglish pronunciation: '{text}'. "
-            "Output JSON with keys: 'spoken', 'translation', 'pronunciation'."
+            "Output JSON with keys: spoken, translation, pronunciation."
         )
 
     try:
@@ -653,10 +659,10 @@ async def translate_text(text: str = Form(...), direction: str = Form(...)):
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 temperature=0.2,
-                max_output_tokens=150
+                max_output_tokens=800
             )
         )
-        return json.loads(response.text)
+        return json.loads(response.text.strip())
     except Exception as e:
         return {"error": f"Text processing error: {str(e)}"}
 
