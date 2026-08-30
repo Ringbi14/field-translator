@@ -1,28 +1,15 @@
 import os
 import json
-import base64
-import io
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from google import genai
 from google.genai import types
-from gtts import gTTS
 
 app = FastAPI()
 
 api_key = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key)
-
-def generate_fast_audio(text: str, lang: str) -> str:
-    try:
-        tts = gTTS(text=text, lang=lang, slow=False)
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        fp.seek(0)
-        return base64.b64encode(fp.read()).decode("utf-8")
-    except Exception:
-        return ""
 
 @app.get("/manifest.json")
 async def manifest():
@@ -60,29 +47,24 @@ HTML_CONTENT = """<!DOCTYPE html>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
     body { background-color: #0b0f19; color: #f1f5f9; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
     
-    /* Top Header */
     header { background: #111827; padding: 0.75rem 1rem; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; }
     .logo-badge { font-weight: 700; font-size: 1rem; color: #60a5fa; display: flex; align-items: center; gap: 6px; }
     .header-actions { display: flex; align-items: center; gap: 10px; }
     .status-pill { font-size: 0.75rem; padding: 3px 8px; border-radius: 12px; background: #064e3b; color: #34d399; font-weight: 600; }
     .status-pill.offline { background: #7f1d1d; color: #f87171; }
 
-    /* Navigation Tabs */
     .nav-tabs { display: flex; background: #111827; border-bottom: 1px solid #1f2937; }
     .nav-tab { flex: 1; padding: 10px; border: none; background: transparent; color: #94a3b8; font-weight: 600; font-size: 0.85rem; cursor: pointer; border-bottom: 2px solid transparent; }
     .nav-tab.active { color: #38bdf8; border-bottom-color: #38bdf8; background: #1e293b; }
 
-    /* Main Container */
     main { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
     .view-panel { display: none; flex-direction: column; height: 100%; gap: 1rem; }
     .view-panel.active { display: flex; }
 
-    /* Direction Switcher */
     .mode-switch { display: flex; background: #1e293b; border-radius: 12px; padding: 4px; gap: 4px; border: 1px solid #334155; }
     .mode-btn { flex: 1; padding: 10px; border: none; background: transparent; font-weight: 600; font-size: 0.85rem; border-radius: 8px; cursor: pointer; color: #94a3b8; }
     .mode-btn.active { background: #2563eb; color: #ffffff; }
 
-    /* Conversation Stream */
     .convo-feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding-bottom: 0.5rem; }
     .msg-card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.4rem; }
     .msg-card.ta { border-left: 4px solid #10b981; }
@@ -95,49 +77,38 @@ HTML_CONTENT = """<!DOCTYPE html>
     .msg-tools { display: flex; gap: 8px; margin-top: 4px; }
     .tool-btn { background: #334155; border: none; border-radius: 6px; padding: 4px 8px; color: #cbd5e1; font-size: 0.75rem; cursor: pointer; display: flex; align-items: center; gap: 4px; }
 
-    /* Visualizer & Mic Area */
     .controls-panel { background: #111827; border-top: 1px solid #1f2937; padding: 0.75rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
     .mic-row { display: flex; align-items: center; justify-content: center; width: 100%; gap: 1.5rem; position: relative; }
     .action-btn-circle { width: 44px; height: 44px; border-radius: 50%; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; cursor: pointer; }
     
-    /* Dedicated Mic Wrapper for animations */
     .mic-wrapper { position: relative; width: 84px; height: 84px; display: flex; align-items: center; justify-content: center; }
-    
-    /* Ripple Rings for recording */
     .ripple-ring { position: absolute; width: 100%; height: 100%; border-radius: 50%; border: 2px solid #ef4444; opacity: 0; pointer-events: none; }
-    .recording .ripple-ring { animation: ring-pulse 1.6s cubic-bezier(0, 0.2, 0.8, 1) infinite; }
+    .recording .ripple-ring { animation: ring-pulse 1.4s cubic-bezier(0, 0.2, 0.8, 1) infinite; }
     @keyframes ring-pulse { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(1.6); opacity: 0; } }
 
-    /* Recording / Translating Button Base */
-    .record-btn { width: 80px; height: 80px; border-radius: 50%; border: none; background: linear-gradient(135deg, #ef4444, #dc2626); color: white; font-size: 1.8rem; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); z-index: 2; transition: all 0.25s ease; }
-    
-    /* RECORDING ACTIVE STATE */
-    .record-btn.is-recording { background: linear-gradient(135deg, #f43f5e, #e11d48); transform: scale(1.06); box-shadow: 0 0 25px rgba(244, 63, 94, 0.7); animation: breathe 1.2s ease-in-out infinite alternate; }
-    @keyframes breathe { 0% { transform: scale(1.02); } 100% { transform: scale(1.1); } }
+    .record-btn { width: 80px; height: 80px; border-radius: 50%; border: none; background: linear-gradient(135deg, #ef4444, #dc2626); color: white; font-size: 1.8rem; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); z-index: 2; transition: all 0.2s ease; }
+    .record-btn.is-recording { background: linear-gradient(135deg, #f43f5e, #e11d48); transform: scale(1.05); animation: breathe 1s ease-in-out infinite alternate; }
+    @keyframes breathe { 0% { transform: scale(1.02); } 100% { transform: scale(1.08); } }
 
-    /* TRANSLATING ACTIVE STATE */
-    .record-btn.is-translating { background: linear-gradient(135deg, #2563eb, #1d4ed8); pointer-events: none; box-shadow: 0 0 25px rgba(37, 99, 235, 0.8); animation: radar-spin 2s linear infinite; }
-    @keyframes radar-spin { 0% { filter: hue-rotate(0deg); } 100% { filter: hue-rotate(60deg); } }
+    .record-btn.is-translating { background: linear-gradient(135deg, #2563eb, #1d4ed8); pointer-events: none; animation: radar-spin 1.5s linear infinite; }
+    @keyframes radar-spin { 0% { filter: hue-rotate(0deg); } 100% { filter: hue-rotate(90deg); } }
 
-    /* Animated Sound Waveform Bars */
-    .waveform-bar-container { display: none; align-items: center; justify-content: center; gap: 4px; height: 20px; }
+    .waveform-bar-container { display: none; align-items: center; justify-content: center; gap: 4px; height: 18px; }
     .waveform-bar-container.active { display: flex; }
-    .wave-bar { width: 3px; height: 6px; background: #f43f5e; border-radius: 2px; animation: wave-jump 0.8s ease-in-out infinite alternate; }
+    .wave-bar { width: 3px; height: 4px; background: #f43f5e; border-radius: 2px; animation: wave-jump 0.6s ease-in-out infinite alternate; }
     .wave-bar:nth-child(1) { animation-delay: 0.1s; }
-    .wave-bar:nth-child(2) { animation-delay: 0.3s; }
-    .wave-bar:nth-child(3) { animation-delay: 0.5s; }
-    .wave-bar:nth-child(4) { animation-delay: 0.2s; }
-    .wave-bar:nth-child(5) { animation-delay: 0.4s; }
-    @keyframes wave-jump { 0% { height: 4px; } 100% { height: 18px; } }
+    .wave-bar:nth-child(2) { animation-delay: 0.25s; }
+    .wave-bar:nth-child(3) { animation-delay: 0.4s; }
+    .wave-bar:nth-child(4) { animation-delay: 0.15s; }
+    .wave-bar:nth-child(5) { animation-delay: 0.3s; }
+    @keyframes wave-jump { 0% { height: 4px; } 100% { height: 16px; } }
 
-    .status-text { font-size: 0.85rem; color: #94a3b8; font-weight: 600; letter-spacing: 0.3px; display: flex; align-items: center; gap: 6px; }
+    .status-text { font-size: 0.85rem; color: #94a3b8; font-weight: 600; }
 
-    /* Form & Text Mode */
     .text-input-box { width: 100%; min-height: 90px; background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 0.75rem; color: #fff; font-size: 1rem; resize: none; }
     .primary-btn { background: #2563eb; color: #fff; border: none; padding: 10px 16px; border-radius: 10px; font-weight: 600; font-size: 0.95rem; cursor: pointer; }
     .secondary-btn { background: #334155; color: #fff; border: none; padding: 8px 12px; border-radius: 8px; font-size: 0.85rem; cursor: pointer; }
 
-    /* Library List */
     .library-item { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.5rem; }
     .library-header { display: flex; justify-content: space-between; font-size: 0.75rem; color: #94a3b8; }
     .library-title { font-weight: 600; font-size: 0.95rem; color: #f1f5f9; }
@@ -159,7 +130,6 @@ HTML_CONTENT = """<!DOCTYPE html>
   </nav>
 
   <main>
-    <!-- 1. LIVE CONVERSATION VIEW -->
     <div id="view-convo" class="view-panel active">
       <div class="mode-switch">
         <button id="btn-ta-en" class="mode-btn active" onclick="setDirection('ta_to_en')">Tamil ➔ English</button>
@@ -169,12 +139,11 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div id="convo-feed" class="convo-feed">
         <div class="msg-card ta">
           <div class="msg-meta"><span>System</span><span>Ready</span></div>
-          <div class="msg-original">Tap the microphone to speak or upload audio. Offline recordings will be saved locally.</div>
+          <div class="msg-original">Tap the microphone to speak or upload audio.</div>
         </div>
       </div>
     </div>
 
-    <!-- 2. DIRECT TEXT VIEW -->
     <div id="view-text" class="view-panel">
       <div class="mode-switch">
         <button id="text-ta-en" class="mode-btn active" onclick="setTextDirection('ta_to_en')">Tamil ➔ English</button>
@@ -188,26 +157,21 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div id="text-result-body" class="msg-translated">—</div>
         <div id="text-result-phonetic" class="msg-phonetic"></div>
         <div class="msg-tools">
-          <button class="tool-btn" onclick="playTextResultAudio()">🔊 Listen</button>
+          <button class="tool-btn" onclick="speakText(document.getElementById('text-result-body').innerText, textDirection === 'en_to_ta' ? 'ta' : 'en')">🔊 Listen</button>
         </div>
       </div>
     </div>
 
-    <!-- 3. SAVED RECORDINGS LIBRARY -->
     <div id="view-library" class="view-panel">
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-size: 0.85rem; color: #94a3b8;">Local Device Storage</span>
+        <span style="font-size: 0.85rem; color: #94a3b8;">Local Storage</span>
         <button class="secondary-btn" onclick="clearAllLibrary()">Clear All</button>
       </div>
-      <div id="library-list" style="display: flex; flex-direction: column; gap: 0.75rem; overflow-y: auto;">
-        <!-- Saved items populate here -->
-      </div>
+      <div id="library-list" style="display: flex; flex-direction: column; gap: 0.75rem; overflow-y: auto;"></div>
     </div>
   </main>
 
-  <!-- BOTTOM CONTROLS (Active during conversation) -->
   <div class="controls-panel" id="bottom-controls">
-    <!-- Live Waveform Visualizer -->
     <div id="waveform-container" class="waveform-bar-container">
       <div class="wave-bar"></div>
       <div class="wave-bar"></div>
@@ -222,7 +186,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         <input type="file" id="audio-upload-input" accept="audio/*" style="display: none;" onchange="handleFileUpload(event)">
       </label>
 
-      <!-- Animated Mic Wrapper -->
       <div class="mic-wrapper" id="mic-wrapper">
         <div class="ripple-ring"></div>
         <button id="record-btn" class="record-btn" onclick="toggleRecord()">🎤</button>
@@ -245,11 +208,20 @@ HTML_CONTENT = """<!DOCTYPE html>
     let mediaRecorder = null;
     let audioChunks = [];
     let isRecording = false;
-    let textResultAudioBase64 = '';
     let recordTimerInterval = null;
     let recordSeconds = 0;
 
-    // Database Initialization (IndexedDB for offline persistence)
+    // Instant Mobile Text-to-Speech Engine
+    function speakText(text, lang) {
+      if (!text || !('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = lang === 'ta' ? 'ta-IN' : 'en-US';
+      utterance.rate = 0.95;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    // IndexedDB Database
     let db;
     const dbReq = indexedDB.open('FieldTranslatorDB', 1);
     dbReq.onupgradeneeded = e => {
@@ -263,7 +235,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       renderLibrary();
     };
 
-    // Network Status Watcher
     function updateNetworkStatus() {
       const pill = document.getElementById('network-pill');
       if (navigator.onLine) {
@@ -278,7 +249,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     window.addEventListener('offline', updateNetworkStatus);
     updateNetworkStatus();
 
-    // UI Tab Navigation
     function switchView(viewName) {
       document.querySelectorAll('.nav-tab').forEach((t, i) => {
         t.classList.toggle('active', (viewName === 'convo' && i === 0) || (viewName === 'text' && i === 1) || (viewName === 'library' && i === 2));
@@ -307,13 +277,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('auto-speak-toggle').style.opacity = autoSpeak ? '1' : '0.4';
     }
 
-    function playBase64Audio(b64) {
-      if (!b64) return;
-      const player = document.getElementById('audio-player');
-      player.src = 'data:audio/mp3;base64,' + b64;
-      player.play();
-    }
-
     function playBlobAudio(blob) {
       if (!blob) return;
       const player = document.getElementById('audio-player');
@@ -321,11 +284,12 @@ HTML_CONTENT = """<!DOCTYPE html>
       player.play();
     }
 
-    // Recording Logic with dynamic UI states
     async function toggleRecord() {
       if (!isRecording) {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1, sampleRate: 16000 }
+          });
           mediaRecorder = new MediaRecorder(stream);
           audioChunks = [];
           mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
@@ -333,7 +297,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           mediaRecorder.start();
           isRecording = true;
 
-          // State 1: RECORDING VISUALS
           const btn = document.getElementById('record-btn');
           const wrapper = document.getElementById('mic-wrapper');
           const wave = document.getElementById('waveform-container');
@@ -361,7 +324,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         mediaRecorder.stream.getTracks().forEach(t => t.stop());
         isRecording = false;
 
-        // State 2: TRANSLATING VISUALS
         const btn = document.getElementById('record-btn');
         const wrapper = document.getElementById('mic-wrapper');
         const wave = document.getElementById('waveform-container');
@@ -395,17 +357,15 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     async function processAndSaveAudio(blobOrFile, direction) {
       const recordItem = {
-        timestamp: new Date().toLocaleString(),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         direction: direction,
         audioBlob: blobOrFile,
         spoken: '',
         translation: '',
         pronunciation: '',
-        audioBase64: '',
         status: navigator.onLine ? 'translating' : 'saved_offline'
       };
 
-      // If offline, save directly to IndexedDB
       if (!navigator.onLine) {
         saveToDB(recordItem);
         appendConvoCard(recordItem, true);
@@ -414,7 +374,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         return;
       }
 
-      // Online: send to server
       const formData = new FormData();
       formData.append('audio', blobOrFile, 'speech.webm');
       formData.append('direction', direction);
@@ -430,11 +389,10 @@ HTML_CONTENT = """<!DOCTYPE html>
           recordItem.spoken = data.spoken || '';
           recordItem.translation = data.translation || '';
           recordItem.pronunciation = data.pronunciation || '';
-          recordItem.audioBase64 = data.audio_base64 || '';
           recordItem.status = 'completed';
 
-          if (autoSpeak && recordItem.audioBase64) {
-            playBase64Audio(recordItem.audioBase64);
+          if (autoSpeak && recordItem.translation) {
+            speakText(recordItem.translation, direction === 'ta_to_en' ? 'en' : 'ta');
           }
         }
       } catch (err) {
@@ -455,7 +413,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       btn.innerText = '🎤';
     }
 
-    // Direct Text Translation
     async function submitTextTranslation() {
       const text = document.getElementById('text-input').value.trim();
       if (!text) return;
@@ -471,24 +428,24 @@ HTML_CONTENT = """<!DOCTYPE html>
         document.getElementById('text-result').style.display = 'flex';
         document.getElementById('text-result-body').innerText = data.translation || 'Error translating';
         document.getElementById('text-result-phonetic').innerText = data.pronunciation ? `Tanglish: "${data.pronunciation}"` : '';
-        textResultAudioBase64 = data.audio_base64 || '';
-        if (autoSpeak && textResultAudioBase64) playBase64Audio(textResultAudioBase64);
+        
+        if (autoSpeak && data.translation) {
+          speakText(data.translation, textDirection === 'en_to_ta' ? 'ta' : 'en');
+        }
       } catch (err) {
         alert('Translation failed. Check connection.');
       }
     }
 
-    function playTextResultAudio() {
-      if (textResultAudioBase64) playBase64Audio(textResultAudioBase64);
-    }
-
-    // UI DOM Helpers
     function appendConvoCard(item, isOffline = false) {
       const feed = document.getElementById('convo-feed');
       const card = document.createElement('div');
       const isTa = item.direction === 'ta_to_en';
       card.className = `msg-card ${isTa ? 'ta' : 'en'}`;
       
+      const targetLang = isTa ? 'en' : 'ta';
+      const escapedTrans = (item.translation || '').replace(/'/g, "\\'");
+
       card.innerHTML = `
         <div class="msg-meta">
           <span>${isTa ? 'Tamil ➔ English' : 'English ➔ Tamil'}</span>
@@ -499,21 +456,18 @@ HTML_CONTENT = """<!DOCTYPE html>
         ${item.pronunciation ? `<div class="msg-phonetic">Tanglish: "${item.pronunciation}"</div>` : ''}
         <div class="msg-tools">
           <button class="tool-btn" onclick="playOriginalItemAudio(${item.id})">▶ Original</button>
-          ${item.audioBase64 ? `<button class="tool-btn" onclick="playBase64Audio('${item.audioBase64}')">🔊 Speak</button>` : ''}
+          ${item.translation ? `<button class="tool-btn" onclick="speakText('${escapedTrans}', '${targetLang}')">🔊 Speak</button>` : ''}
         </div>
       `;
       feed.appendChild(card);
       feed.scrollTop = feed.scrollHeight;
     }
 
-    // IndexedDB Operations
     function saveToDB(item) {
       if (!db) return;
       const tx = db.transaction('recordings', 'readwrite');
       tx.objectStore('recordings').add(item);
-      tx.oncomplete = () => {
-        updateLibraryBadge();
-      };
+      tx.oncomplete = () => updateLibraryBadge();
     }
 
     function updateLibraryBadge() {
@@ -586,7 +540,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           item.spoken = data.spoken || '';
           item.translation = data.translation || '';
           item.pronunciation = data.pronunciation || '';
-          item.audioBase64 = data.audio_base64 || '';
           item.status = 'completed';
 
           const updateTx = db.transaction('recordings', 'readwrite');
@@ -650,23 +603,18 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
     
     if direction == "ta_to_en":
         prompt = (
-            "You are an expert field assistant translating spoken Tamil to English for community researchers in Tamil Nadu. "
-            "1. Listen carefully to the Tamil audio. "
-            "2. Accurately capture colloquial and conversational Tamil expressions. "
-            "3. Translate into clear, practical, meaning-focused English (avoid rigid word-for-word translation). "
-            "4. If the speech is indistinct or background noise only, state '[Indistinct speech]' without making up facts. "
-            "Respond strictly with a JSON object containing keys: 'spoken', 'translation', 'pronunciation' (leave pronunciation as empty string)."
+            "Fieldwork Tamil-to-English translation. "
+            "1. Transcribe colloquial spoken Tamil. "
+            "2. Translate into clean, natural conversational English. "
+            "Output JSON with keys: 'spoken', 'translation', 'pronunciation' (empty string)."
         )
-        target_lang = "en"
     else:
         prompt = (
-            "You are an expert field assistant translating English into spoken Tamil for community researchers in Tamil Nadu. "
-            "1. Translate English into natural, polite, everyday spoken Tamil (colloquial conversational register). "
-            "2. Provide an easy-to-read Tanglish pronunciation guide in English Latin letters. "
-            "3. If speech is indistinct, state '[Indistinct speech]'. "
-            "Respond strictly with a JSON object containing keys: 'spoken', 'translation', 'pronunciation'."
+            "Fieldwork English-to-Tamil translation. "
+            "1. Translate into natural, polite colloquial spoken Tamil (Pechu Tamizh). "
+            "2. Provide phonetic Tanglish pronunciation in Latin letters. "
+            "Output JSON with keys: 'spoken', 'translation', 'pronunciation'."
         )
-        target_lang = "ta"
 
     try:
         response = client.models.generate_content(
@@ -676,13 +624,12 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
                 prompt
             ],
             config=types.GenerateContentConfig(
-                response_mime_type="application/json"
+                response_mime_type="application/json",
+                temperature=0.2,
+                max_output_tokens=150
             )
         )
-        data = json.loads(response.text)
-        translation_text = data.get("translation", "")
-        data["audio_base64"] = generate_fast_audio(translation_text, target_lang) if translation_text else ""
-        return data
+        return json.loads(response.text)
     except Exception as e:
         return {"error": f"Audio processing error: {str(e)}"}
 
@@ -690,29 +637,26 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
 async def translate_text(text: str = Form(...), direction: str = Form(...)):
     if direction == "ta_to_en":
         prompt = (
-            "Translate this Tamil text into clear, simple conversational English focusing on the core meaning: "
-            f"'{text}'. Respond strictly in JSON with keys: 'spoken', 'translation', 'pronunciation'."
+            f"Translate spoken Tamil to conversational English: '{text}'. "
+            "Output JSON with keys: 'spoken', 'translation', 'pronunciation' (empty string)."
         )
-        target_lang = "en"
     else:
         prompt = (
-            "Translate this English text into natural, polite spoken Tamil script and provide a Tanglish phonetic pronunciation: "
-            f"'{text}'. Respond strictly in JSON with keys: 'spoken', 'translation', 'pronunciation'."
+            f"Translate English to polite spoken Tamil with Tanglish pronunciation: '{text}'. "
+            "Output JSON with keys: 'spoken', 'translation', 'pronunciation'."
         )
-        target_lang = "ta"
 
     try:
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=[prompt],
             config=types.GenerateContentConfig(
-                response_mime_type="application/json"
+                response_mime_type="application/json",
+                temperature=0.2,
+                max_output_tokens=150
             )
         )
-        data = json.loads(response.text)
-        translation_text = data.get("translation", "")
-        data["audio_base64"] = generate_fast_audio(translation_text, target_lang) if translation_text else ""
-        return data
+        return json.loads(response.text)
     except Exception as e:
         return {"error": f"Text processing error: {str(e)}"}
 
