@@ -1,6 +1,7 @@
 import os
 import json
 import uvicorn
+from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from google import genai
@@ -10,6 +11,11 @@ app = FastAPI()
 
 api_key = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key)
+
+class TranslationResponse(BaseModel):
+    spoken: str
+    translation: str
+    pronunciation: str
 
 @app.get("/manifest.json")
 async def manifest():
@@ -285,16 +291,20 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function toggleRecord() {
       if (!isRecording) {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1, sampleRate: 16000 }
+          });
           
-          let mimeType = 'audio/webm';
+          let options = {};
           if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-            mimeType = 'audio/webm;codecs=opus';
+            options = { mimeType: 'audio/webm;codecs=opus' };
+          } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+            options = { mimeType: 'audio/webm' };
           } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-            mimeType = 'audio/mp4';
+            options = { mimeType: 'audio/mp4' };
           }
 
-          mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+          mediaRecorder = new MediaRecorder(stream, options);
           audioChunks = [];
           mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
           mediaRecorder.onstop = handleRecordingComplete;
@@ -612,14 +622,13 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
             "Fieldwork Tamil-to-English translator. "
             "1. Transcribe colloquial spoken Tamil. "
             "2. Translate meaning into natural conversational English. "
-            "Output JSON with keys: spoken, translation, pronunciation (leave pronunciation empty string)."
+            "Leave pronunciation empty."
         )
     else:
         prompt = (
             "Fieldwork English-to-Tamil translator. "
-            "1. Translate English into polite everyday spoken Tamil (Pechu Tamizh). "
-            "2. Provide Tanglish phonetic pronunciation. "
-            "Output JSON with keys: spoken, translation, pronunciation."
+            "1. Translate English into polite colloquial spoken Tamil (Pechu Tamizh). "
+            "2. Provide phonetic Tanglish pronunciation in English Latin letters."
         )
 
     try:
@@ -631,11 +640,11 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.2,
-                max_output_tokens=800
+                response_schema=TranslationResponse,
+                temperature=0.2
             )
         )
-        return json.loads(response.text.strip())
+        return json.loads(response.text)
     except Exception as e:
         return {"error": f"Audio processing error: {str(e)}"}
 
@@ -644,12 +653,11 @@ async def translate_text(text: str = Form(...), direction: str = Form(...)):
     if direction == "ta_to_en":
         prompt = (
             f"Translate spoken Tamil to conversational English: '{text}'. "
-            "Output JSON with keys: spoken, translation, pronunciation (leave pronunciation empty string)."
+            "Leave pronunciation empty."
         )
     else:
         prompt = (
-            f"Translate English to polite spoken Tamil with Tanglish pronunciation: '{text}'. "
-            "Output JSON with keys: spoken, translation, pronunciation."
+            f"Translate English to polite spoken Tamil with Tanglish pronunciation: '{text}'."
         )
 
     try:
@@ -658,11 +666,11 @@ async def translate_text(text: str = Form(...), direction: str = Form(...)):
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.2,
-                max_output_tokens=800
+                response_schema=TranslationResponse,
+                temperature=0.2
             )
         )
-        return json.loads(response.text.strip())
+        return json.loads(response.text)
     except Exception as e:
         return {"error": f"Text processing error: {str(e)}"}
 
