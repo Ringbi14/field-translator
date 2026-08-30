@@ -95,14 +95,42 @@ HTML_CONTENT = """<!DOCTYPE html>
     .msg-tools { display: flex; gap: 8px; margin-top: 4px; }
     .tool-btn { background: #334155; border: none; border-radius: 6px; padding: 4px 8px; color: #cbd5e1; font-size: 0.75rem; cursor: pointer; display: flex; align-items: center; gap: 4px; }
 
-    /* Controls Panel */
-    .controls-panel { background: #111827; border-top: 1px solid #1f2937; padding: 0.75rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
-    .mic-row { display: flex; align-items: center; justify-content: center; width: 100%; gap: 1.5rem; }
+    /* Visualizer & Mic Area */
+    .controls-panel { background: #111827; border-top: 1px solid #1f2937; padding: 0.75rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
+    .mic-row { display: flex; align-items: center; justify-content: center; width: 100%; gap: 1.5rem; position: relative; }
     .action-btn-circle { width: 44px; height: 44px; border-radius: 50%; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-    .record-btn { width: 75px; height: 75px; border-radius: 50%; border: none; background: linear-gradient(135deg, #ef4444, #dc2626); color: white; font-size: 1.75rem; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); }
-    .record-btn.recording { animation: pulse 1s infinite; background: #dc2626; }
-    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
-    .status-text { font-size: 0.85rem; color: #94a3b8; font-weight: 500; }
+    
+    /* Dedicated Mic Wrapper for animations */
+    .mic-wrapper { position: relative; width: 84px; height: 84px; display: flex; align-items: center; justify-content: center; }
+    
+    /* Ripple Rings for recording */
+    .ripple-ring { position: absolute; width: 100%; height: 100%; border-radius: 50%; border: 2px solid #ef4444; opacity: 0; pointer-events: none; }
+    .recording .ripple-ring { animation: ring-pulse 1.6s cubic-bezier(0, 0.2, 0.8, 1) infinite; }
+    @keyframes ring-pulse { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(1.6); opacity: 0; } }
+
+    /* Recording / Translating Button Base */
+    .record-btn { width: 80px; height: 80px; border-radius: 50%; border: none; background: linear-gradient(135deg, #ef4444, #dc2626); color: white; font-size: 1.8rem; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); z-index: 2; transition: all 0.25s ease; }
+    
+    /* RECORDING ACTIVE STATE */
+    .record-btn.is-recording { background: linear-gradient(135deg, #f43f5e, #e11d48); transform: scale(1.06); box-shadow: 0 0 25px rgba(244, 63, 94, 0.7); animation: breathe 1.2s ease-in-out infinite alternate; }
+    @keyframes breathe { 0% { transform: scale(1.02); } 100% { transform: scale(1.1); } }
+
+    /* TRANSLATING ACTIVE STATE */
+    .record-btn.is-translating { background: linear-gradient(135deg, #2563eb, #1d4ed8); pointer-events: none; box-shadow: 0 0 25px rgba(37, 99, 235, 0.8); animation: radar-spin 2s linear infinite; }
+    @keyframes radar-spin { 0% { filter: hue-rotate(0deg); } 100% { filter: hue-rotate(60deg); } }
+
+    /* Animated Sound Waveform Bars */
+    .waveform-bar-container { display: none; align-items: center; justify-content: center; gap: 4px; height: 20px; }
+    .waveform-bar-container.active { display: flex; }
+    .wave-bar { width: 3px; height: 6px; background: #f43f5e; border-radius: 2px; animation: wave-jump 0.8s ease-in-out infinite alternate; }
+    .wave-bar:nth-child(1) { animation-delay: 0.1s; }
+    .wave-bar:nth-child(2) { animation-delay: 0.3s; }
+    .wave-bar:nth-child(3) { animation-delay: 0.5s; }
+    .wave-bar:nth-child(4) { animation-delay: 0.2s; }
+    .wave-bar:nth-child(5) { animation-delay: 0.4s; }
+    @keyframes wave-jump { 0% { height: 4px; } 100% { height: 18px; } }
+
+    .status-text { font-size: 0.85rem; color: #94a3b8; font-weight: 600; letter-spacing: 0.3px; display: flex; align-items: center; gap: 6px; }
 
     /* Form & Text Mode */
     .text-input-box { width: 100%; min-height: 90px; background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 0.75rem; color: #fff; font-size: 1rem; resize: none; }
@@ -179,18 +207,32 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <!-- BOTTOM CONTROLS (Active during conversation) -->
   <div class="controls-panel" id="bottom-controls">
+    <!-- Live Waveform Visualizer -->
+    <div id="waveform-container" class="waveform-bar-container">
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+    </div>
+
     <div class="mic-row">
       <label class="action-btn-circle" title="Upload Audio File">
         📁
         <input type="file" id="audio-upload-input" accept="audio/*" style="display: none;" onchange="handleFileUpload(event)">
       </label>
 
-      <button id="record-btn" class="record-btn" onclick="toggleRecord()">🎤</button>
+      <!-- Animated Mic Wrapper -->
+      <div class="mic-wrapper" id="mic-wrapper">
+        <div class="ripple-ring"></div>
+        <button id="record-btn" class="record-btn" onclick="toggleRecord()">🎤</button>
+      </div>
 
       <button class="action-btn-circle" id="auto-speak-toggle" title="Auto-speak on/off" onclick="toggleAutoSpeak()">
         🔊
       </button>
     </div>
+    
     <div id="status" class="status-text">Tap mic to speak</div>
   </div>
 
@@ -204,6 +246,8 @@ HTML_CONTENT = """<!DOCTYPE html>
     let audioChunks = [];
     let isRecording = false;
     let textResultAudioBase64 = '';
+    let recordTimerInterval = null;
+    let recordSeconds = 0;
 
     // Database Initialization (IndexedDB for offline persistence)
     let db;
@@ -277,7 +321,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       player.play();
     }
 
-    // Recording Logic
+    // Recording Logic with dynamic UI states
     async function toggleRecord() {
       if (!isRecording) {
         try {
@@ -288,17 +332,47 @@ HTML_CONTENT = """<!DOCTYPE html>
           mediaRecorder.onstop = handleRecordingComplete;
           mediaRecorder.start();
           isRecording = true;
-          document.getElementById('record-btn').classList.add('recording');
-          document.getElementById('status').innerText = 'Listening... Tap to stop';
+
+          // State 1: RECORDING VISUALS
+          const btn = document.getElementById('record-btn');
+          const wrapper = document.getElementById('mic-wrapper');
+          const wave = document.getElementById('waveform-container');
+          
+          btn.classList.add('is-recording');
+          btn.innerText = '⏹️';
+          wrapper.classList.add('recording');
+          wave.classList.add('active');
+
+          recordSeconds = 0;
+          document.getElementById('status').innerText = 'Listening... (00:00)';
+          recordTimerInterval = setInterval(() => {
+            recordSeconds++;
+            const mins = String(Math.floor(recordSeconds / 60)).padStart(2, '0');
+            const secs = String(recordSeconds % 60).padStart(2, '0');
+            document.getElementById('status').innerText = `Listening... (${mins}:${secs})`;
+          }, 1000);
+
         } catch (err) {
           alert('Microphone permission required.');
         }
       } else {
+        clearInterval(recordTimerInterval);
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach(t => t.stop());
         isRecording = false;
-        document.getElementById('record-btn').classList.remove('recording');
-        document.getElementById('status').innerText = 'Processing...';
+
+        // State 2: TRANSLATING VISUALS
+        const btn = document.getElementById('record-btn');
+        const wrapper = document.getElementById('mic-wrapper');
+        const wave = document.getElementById('waveform-container');
+
+        btn.classList.remove('is-recording');
+        wrapper.classList.remove('recording');
+        wave.classList.remove('active');
+
+        btn.classList.add('is-translating');
+        btn.innerText = '⏳';
+        document.getElementById('status').innerText = 'AI Translating...';
       }
     }
 
@@ -310,6 +384,12 @@ HTML_CONTENT = """<!DOCTYPE html>
     function handleFileUpload(e) {
       const file = e.target.files[0];
       if (!file) return;
+
+      const btn = document.getElementById('record-btn');
+      btn.classList.add('is-translating');
+      btn.innerText = '⏳';
+      document.getElementById('status').innerText = 'Processing file...';
+
       processAndSaveAudio(file, currentDirection);
     }
 
@@ -329,12 +409,12 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (!navigator.onLine) {
         saveToDB(recordItem);
         appendConvoCard(recordItem, true);
+        resetMicButton();
         document.getElementById('status').innerText = 'Saved offline in Library';
         return;
       }
 
       // Online: send to server
-      document.getElementById('status').innerText = 'Translating...';
       const formData = new FormData();
       formData.append('audio', blobOrFile, 'speech.webm');
       formData.append('direction', direction);
@@ -364,7 +444,15 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       saveToDB(recordItem);
       appendConvoCard(recordItem);
+      resetMicButton();
       document.getElementById('status').innerText = 'Tap mic to speak';
+    }
+
+    function resetMicButton() {
+      const btn = document.getElementById('record-btn');
+      btn.classList.remove('is-translating');
+      btn.classList.remove('is-recording');
+      btn.innerText = '🎤';
     }
 
     // Direct Text Translation
