@@ -3,7 +3,7 @@ import json
 import base64
 import io
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from google import genai
 from google.genai import types
@@ -27,12 +27,12 @@ def generate_fast_audio(text: str, lang: str) -> str:
 @app.get("/manifest.json")
 async def manifest():
     return JSONResponse({
-        "name": "Field Translator",
-        "short_name": "Translator",
+        "name": "Field Translator Assistant",
+        "short_name": "FieldAssistant",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#0f172a",
-        "theme_color": "#2563eb",
+        "background_color": "#090d16",
+        "theme_color": "#1d4ed8",
         "icons": [
             {
                 "src": "https://cdn-icons-png.flaticon.com/512/2875/2875338.png",
@@ -47,178 +47,505 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Field Translator</title>
+  <title>Field Translation Assistant</title>
   
   <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#2563eb">
+  <meta name="theme-color" content="#1d4ed8">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Translator">
   <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2875/2875338.png">
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
-    body { background-color: #0f172a; color: #f8fafc; display: flex; justify-content: center; height: 100vh; overflow: hidden; }
-    .app-shell { width: 100%; max-width: 480px; height: 100%; display: flex; flex-direction: column; justify-content: space-between; padding: 1.25rem; }
-    .top-bar { display: flex; align-items: center; justify-content: space-between; padding-bottom: 0.5rem; }
-    .app-title { font-size: 1.1rem; font-weight: 700; letter-spacing: 0.5px; color: #e2e8f0; }
-    .mode-switch { display: flex; background: #1e293b; border-radius: 14px; padding: 5px; gap: 6px; border: 1px solid #334155; }
-    .mode-btn { flex: 1; padding: 14px 10px; border: none; background: transparent; font-weight: 600; font-size: 0.95rem; border-radius: 10px; cursor: pointer; color: #94a3b8; transition: all 0.2s ease; }
-    .mode-btn.active { background: #2563eb; color: #ffffff; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4); }
-    .feed-area { display: flex; flex-direction: column; gap: 1rem; flex: 1; margin: 1rem 0; overflow-y: auto; }
-    .card-box { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 1rem 1.15rem; }
-    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
-    .card-title { font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
-    .card-content { font-size: 1.15rem; line-height: 1.45; color: #f8fafc; min-height: 28px; word-break: break-word; }
-    .pronunciation { font-size: 0.95rem; color: #38bdf8; font-style: italic; margin-top: 0.4rem; }
-    .speak-btn { background: #334155; border: none; border-radius: 50%; width: 34px; height: 34px; cursor: pointer; font-size: 1rem; color: #ffffff; display: flex; align-items: center; justify-content: center; }
-    .controls { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; padding-bottom: 0.5rem; }
-    .record-btn { width: 90px; height: 90px; border-radius: 50%; border: none; background: linear-gradient(135deg, #ef4444, #dc2626); color: white; font-size: 2rem; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 20px rgba(239, 68, 68, 0.45); }
-    .record-btn.recording { animation: pulse 1.1s infinite; background: linear-gradient(135deg, #f87171, #ef4444); }
-    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.12); } 100% { transform: scale(1); } }
-    .status-text { font-size: 0.9rem; color: #94a3b8; font-weight: 500; }
-    .toggle-row { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #94a3b8; font-weight: 500; }
-    .toggle-row input { cursor: pointer; width: 16px; height: 16px; accent-color: #2563eb; }
+    body { background-color: #0b0f19; color: #f1f5f9; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    
+    /* Top Header */
+    header { background: #111827; padding: 0.75rem 1rem; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; }
+    .logo-badge { font-weight: 700; font-size: 1rem; color: #60a5fa; display: flex; align-items: center; gap: 6px; }
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .status-pill { font-size: 0.75rem; padding: 3px 8px; border-radius: 12px; background: #064e3b; color: #34d399; font-weight: 600; }
+    .status-pill.offline { background: #7f1d1d; color: #f87171; }
+
+    /* Navigation Tabs */
+    .nav-tabs { display: flex; background: #111827; border-bottom: 1px solid #1f2937; }
+    .nav-tab { flex: 1; padding: 10px; border: none; background: transparent; color: #94a3b8; font-weight: 600; font-size: 0.85rem; cursor: pointer; border-bottom: 2px solid transparent; }
+    .nav-tab.active { color: #38bdf8; border-bottom-color: #38bdf8; background: #1e293b; }
+
+    /* Main Container */
+    main { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
+    .view-panel { display: none; flex-direction: column; height: 100%; gap: 1rem; }
+    .view-panel.active { display: flex; }
+
+    /* Direction Switcher */
+    .mode-switch { display: flex; background: #1e293b; border-radius: 12px; padding: 4px; gap: 4px; border: 1px solid #334155; }
+    .mode-btn { flex: 1; padding: 10px; border: none; background: transparent; font-weight: 600; font-size: 0.85rem; border-radius: 8px; cursor: pointer; color: #94a3b8; }
+    .mode-btn.active { background: #2563eb; color: #ffffff; }
+
+    /* Conversation Stream */
+    .convo-feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding-bottom: 0.5rem; }
+    .msg-card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.4rem; }
+    .msg-card.ta { border-left: 4px solid #10b981; }
+    .msg-card.en { border-left: 4px solid #3b82f6; }
+    .msg-meta { display: flex; justify-content: space-between; font-size: 0.7rem; color: #94a3b8; font-weight: 600; text-transform: uppercase; }
+    .msg-original { font-size: 1rem; color: #e2e8f0; line-height: 1.4; }
+    .msg-translated { font-size: 1.05rem; font-weight: 600; color: #60a5fa; line-height: 1.4; }
+    .msg-card.ta .msg-translated { color: #34d399; }
+    .msg-phonetic { font-size: 0.85rem; color: #38bdf8; font-style: italic; }
+    .msg-tools { display: flex; gap: 8px; margin-top: 4px; }
+    .tool-btn { background: #334155; border: none; border-radius: 6px; padding: 4px 8px; color: #cbd5e1; font-size: 0.75rem; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+
+    /* Controls Panel */
+    .controls-panel { background: #111827; border-top: 1px solid #1f2937; padding: 0.75rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
+    .mic-row { display: flex; align-items: center; justify-content: center; width: 100%; gap: 1.5rem; }
+    .action-btn-circle { width: 44px; height: 44px; border-radius: 50%; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+    .record-btn { width: 75px; height: 75px; border-radius: 50%; border: none; background: linear-gradient(135deg, #ef4444, #dc2626); color: white; font-size: 1.75rem; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); }
+    .record-btn.recording { animation: pulse 1s infinite; background: #dc2626; }
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+    .status-text { font-size: 0.85rem; color: #94a3b8; font-weight: 500; }
+
+    /* Form & Text Mode */
+    .text-input-box { width: 100%; min-height: 90px; background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 0.75rem; color: #fff; font-size: 1rem; resize: none; }
+    .primary-btn { background: #2563eb; color: #fff; border: none; padding: 10px 16px; border-radius: 10px; font-weight: 600; font-size: 0.95rem; cursor: pointer; }
+    .secondary-btn { background: #334155; color: #fff; border: none; padding: 8px 12px; border-radius: 8px; font-size: 0.85rem; cursor: pointer; }
+
+    /* Library List */
+    .library-item { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.5rem; }
+    .library-header { display: flex; justify-content: space-between; font-size: 0.75rem; color: #94a3b8; }
+    .library-title { font-weight: 600; font-size: 0.95rem; color: #f1f5f9; }
   </style>
 </head>
 <body>
-  <div class="app-shell">
-    <div class="top-bar">
-      <div class="app-title">⚡ Field Translator</div>
-      <div class="toggle-row">
-        <label for="auto-speak" style="cursor: pointer;">Auto-Speak</label>
-        <input type="checkbox" id="auto-speak" checked>
+  <header>
+    <div class="logo-badge">⚡ Field Assistant</div>
+    <div class="header-actions">
+      <span id="network-pill" class="status-pill">ONLINE</span>
+      <button class="secondary-btn" style="padding: 4px 8px; font-size: 0.75rem;" onclick="exportRecordsTxt()">📤 Export</button>
+    </div>
+  </header>
+
+  <nav class="nav-tabs">
+    <button class="nav-tab active" onclick="switchView('convo')">💬 Conversation</button>
+    <button class="nav-tab" onclick="switchView('text')">📝 Text Translate</button>
+    <button class="nav-tab" onclick="switchView('library')">📚 Library (<span id="lib-count">0</span>)</button>
+  </nav>
+
+  <main>
+    <!-- 1. LIVE CONVERSATION VIEW -->
+    <div id="view-convo" class="view-panel active">
+      <div class="mode-switch">
+        <button id="btn-ta-en" class="mode-btn active" onclick="setDirection('ta_to_en')">Tamil ➔ English</button>
+        <button id="btn-en-ta" class="mode-btn" onclick="setDirection('en_to_ta')">English ➔ Tamil</button>
       </div>
-    </div>
 
-    <div class="mode-switch">
-      <button id="btn-ta-en" class="mode-btn active" onclick="setDirection('ta_to_en')">Tamil ➔ English</button>
-      <button id="btn-en-ta" class="mode-btn" onclick="setDirection('en_to_ta')">English ➔ Tamil</button>
-    </div>
-
-    <div class="feed-area">
-      <div class="card-box">
-        <div class="card-header">
-          <div class="card-title">Original Speech</div>
+      <div id="convo-feed" class="convo-feed">
+        <div class="msg-card ta">
+          <div class="msg-meta"><span>System</span><span>Ready</span></div>
+          <div class="msg-original">Tap the microphone to speak or upload audio. Offline recordings will be saved locally.</div>
         </div>
-        <div id="spoken-output" class="card-content">—</div>
-      </div>
-
-      <div class="card-box" style="border-color: #3b82f6;">
-        <div class="card-header">
-          <div class="card-title" style="color: #60a5fa;">Translation</div>
-          <button id="btn-play-trans" class="speak-btn" onclick="playCurrentAudio()">🔊</button>
-        </div>
-        <div id="trans-output" class="card-content" style="color: #60a5fa; font-weight: 600;">—</div>
-        <div id="pronunciation-output" class="pronunciation"></div>
       </div>
     </div>
 
-    <div class="controls">
+    <!-- 2. DIRECT TEXT VIEW -->
+    <div id="view-text" class="view-panel">
+      <div class="mode-switch">
+        <button id="text-ta-en" class="mode-btn active" onclick="setTextDirection('ta_to_en')">Tamil ➔ English</button>
+        <button id="text-en-ta" class="mode-btn" onclick="setTextDirection('en_to_ta')">English ➔ Tamil</button>
+      </div>
+      <textarea id="text-input" class="text-input-box" placeholder="Type words or phrase here..."></textarea>
+      <button class="primary-btn" onclick="submitTextTranslation()">Translate Text</button>
+
+      <div id="text-result" class="msg-card en" style="display: none;">
+        <div class="msg-meta"><span>Result</span></div>
+        <div id="text-result-body" class="msg-translated">—</div>
+        <div id="text-result-phonetic" class="msg-phonetic"></div>
+        <div class="msg-tools">
+          <button class="tool-btn" onclick="playTextResultAudio()">🔊 Listen</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. SAVED RECORDINGS LIBRARY -->
+    <div id="view-library" class="view-panel">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 0.85rem; color: #94a3b8;">Local Device Storage</span>
+        <button class="secondary-btn" onclick="clearAllLibrary()">Clear All</button>
+      </div>
+      <div id="library-list" style="display: flex; flex-direction: column; gap: 0.75rem; overflow-y: auto;">
+        <!-- Saved items populate here -->
+      </div>
+    </div>
+  </main>
+
+  <!-- BOTTOM CONTROLS (Active during conversation) -->
+  <div class="controls-panel" id="bottom-controls">
+    <div class="mic-row">
+      <label class="action-btn-circle" title="Upload Audio File">
+        📁
+        <input type="file" id="audio-upload-input" accept="audio/*" style="display: none;" onchange="handleFileUpload(event)">
+      </label>
+
       <button id="record-btn" class="record-btn" onclick="toggleRecord()">🎤</button>
-      <div id="status" class="status-text">Tap mic to speak</div>
+
+      <button class="action-btn-circle" id="auto-speak-toggle" title="Auto-speak on/off" onclick="toggleAutoSpeak()">
+        🔊
+      </button>
     </div>
+    <div id="status" class="status-text">Tap mic to speak</div>
   </div>
 
   <audio id="audio-player"></audio>
 
   <script>
     let currentDirection = 'ta_to_en';
+    let textDirection = 'ta_to_en';
+    let autoSpeak = true;
     let mediaRecorder = null;
     let audioChunks = [];
     let isRecording = false;
-    let currentAudioBase64 = '';
+    let textResultAudioBase64 = '';
+
+    // Database Initialization (IndexedDB for offline persistence)
+    let db;
+    const dbReq = indexedDB.open('FieldTranslatorDB', 1);
+    dbReq.onupgradeneeded = e => {
+      db = e.target.result;
+      if (!db.objectStoreNames.contains('recordings')) {
+        db.createObjectStore('recordings', { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    dbReq.onsuccess = e => {
+      db = e.target.result;
+      renderLibrary();
+    };
+
+    // Network Status Watcher
+    function updateNetworkStatus() {
+      const pill = document.getElementById('network-pill');
+      if (navigator.onLine) {
+        pill.innerText = 'ONLINE';
+        pill.className = 'status-pill';
+      } else {
+        pill.innerText = 'OFFLINE';
+        pill.className = 'status-pill offline';
+      }
+    }
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
+    updateNetworkStatus();
+
+    // UI Tab Navigation
+    function switchView(viewName) {
+      document.querySelectorAll('.nav-tab').forEach((t, i) => {
+        t.classList.toggle('active', (viewName === 'convo' && i === 0) || (viewName === 'text' && i === 1) || (viewName === 'library' && i === 2));
+      });
+      document.getElementById('view-convo').classList.toggle('active', viewName === 'convo');
+      document.getElementById('view-text').classList.toggle('active', viewName === 'text');
+      document.getElementById('view-library').classList.toggle('active', viewName === 'library');
+      document.getElementById('bottom-controls').style.display = (viewName === 'convo') ? 'flex' : 'none';
+      if (viewName === 'library') renderLibrary();
+    }
 
     function setDirection(dir) {
       currentDirection = dir;
       document.getElementById('btn-ta-en').classList.toggle('active', dir === 'ta_to_en');
       document.getElementById('btn-en-ta').classList.toggle('active', dir === 'en_to_ta');
-      document.getElementById('pronunciation-output').innerText = '';
     }
 
-    function playCurrentAudio() {
-      if (!currentAudioBase64) return;
+    function setTextDirection(dir) {
+      textDirection = dir;
+      document.getElementById('text-ta-en').classList.toggle('active', dir === 'ta_to_en');
+      document.getElementById('text-en-ta').classList.toggle('active', dir === 'en_to_ta');
+    }
+
+    function toggleAutoSpeak() {
+      autoSpeak = !autoSpeak;
+      document.getElementById('auto-speak-toggle').style.opacity = autoSpeak ? '1' : '0.4';
+    }
+
+    function playBase64Audio(b64) {
+      if (!b64) return;
       const player = document.getElementById('audio-player');
-      player.src = 'data:audio/mp3;base64,' + currentAudioBase64;
+      player.src = 'data:audio/mp3;base64,' + b64;
       player.play();
     }
 
+    function playBlobAudio(blob) {
+      if (!blob) return;
+      const player = document.getElementById('audio-player');
+      player.src = URL.createObjectURL(blob);
+      player.play();
+    }
+
+    // Recording Logic
     async function toggleRecord() {
       if (!isRecording) {
-        startRecording();
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
+          audioChunks = [];
+          mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+          mediaRecorder.onstop = handleRecordingComplete;
+          mediaRecorder.start();
+          isRecording = true;
+          document.getElementById('record-btn').classList.add('recording');
+          document.getElementById('status').innerText = 'Listening... Tap to stop';
+        } catch (err) {
+          alert('Microphone permission required.');
+        }
       } else {
-        stopRecording();
-      }
-    }
-
-    async function startRecording() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
-        audioChunks = [];
-
-        mediaRecorder.ondataavailable = event => {
-          if (event.data.size > 0) audioChunks.push(event.data);
-        };
-
-        mediaRecorder.onstop = sendAudioToServer;
-        mediaRecorder.start();
-
-        isRecording = true;
-        document.getElementById('record-btn').classList.add('recording');
-        document.getElementById('status').innerText = 'Listening... Tap to finish';
-      } catch (err) {
-        alert('Microphone access denied or not supported.');
-      }
-    }
-
-    function stopRecording() {
-      if (mediaRecorder && isRecording) {
         mediaRecorder.stop();
-        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        mediaRecorder.stream.getTracks().forEach(t => t.stop());
         isRecording = false;
         document.getElementById('record-btn').classList.remove('recording');
-        document.getElementById('status').innerText = 'Translating...';
+        document.getElementById('status').innerText = 'Processing...';
       }
     }
 
-    async function sendAudioToServer() {
+    async function handleRecordingComplete() {
       const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+      processAndSaveAudio(audioBlob, currentDirection);
+    }
+
+    function handleFileUpload(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      processAndSaveAudio(file, currentDirection);
+    }
+
+    async function processAndSaveAudio(blobOrFile, direction) {
+      const recordItem = {
+        timestamp: new Date().toLocaleString(),
+        direction: direction,
+        audioBlob: blobOrFile,
+        spoken: '',
+        translation: '',
+        pronunciation: '',
+        audioBase64: '',
+        status: navigator.onLine ? 'translating' : 'saved_offline'
+      };
+
+      // If offline, save directly to IndexedDB
+      if (!navigator.onLine) {
+        saveToDB(recordItem);
+        appendConvoCard(recordItem, true);
+        document.getElementById('status').innerText = 'Saved offline in Library';
+        return;
+      }
+
+      // Online: send to server
+      document.getElementById('status').innerText = 'Translating...';
       const formData = new FormData();
-      formData.append('audio', audioBlob, 'speech.webm');
-      formData.append('direction', currentDirection);
+      formData.append('audio', blobOrFile, 'speech.webm');
+      formData.append('direction', direction);
 
       try {
-        const response = await fetch('/translate-audio', {
-          method: 'POST',
-          body: formData
-        });
-
+        const response = await fetch('/translate-audio', { method: 'POST', body: formData });
         const data = await response.json();
-        document.getElementById('status').innerText = 'Tap mic to speak';
         
         if (data.error) {
-          document.getElementById('trans-output').innerText = data.error;
-          document.getElementById('spoken-output').innerText = '—';
-          document.getElementById('pronunciation-output').innerText = '';
-          currentAudioBase64 = '';
+          recordItem.status = 'error';
+          recordItem.translation = data.error;
         } else {
-          document.getElementById('spoken-output').innerText = data.spoken || '—';
-          document.getElementById('trans-output').innerText = data.translation || '—';
-          document.getElementById('pronunciation-output').innerText = data.pronunciation ? `Tanglish: "${data.pronunciation}"` : '';
-          currentAudioBase64 = data.audio_base64 || '';
+          recordItem.spoken = data.spoken || '';
+          recordItem.translation = data.translation || '';
+          recordItem.pronunciation = data.pronunciation || '';
+          recordItem.audioBase64 = data.audio_base64 || '';
+          recordItem.status = 'completed';
 
-          if (document.getElementById('auto-speak').checked && currentAudioBase64) {
-            playCurrentAudio();
+          if (autoSpeak && recordItem.audioBase64) {
+            playBase64Audio(recordItem.audioBase64);
           }
         }
       } catch (err) {
-        document.getElementById('status').innerText = 'Tap mic to speak';
-        document.getElementById('trans-output').innerText = 'Server error. Please try again.';
-        document.getElementById('pronunciation-output').innerText = '';
-        currentAudioBase64 = '';
+        recordItem.status = 'saved_offline';
+        recordItem.translation = 'Network dropped. Saved locally in Library.';
       }
+
+      saveToDB(recordItem);
+      appendConvoCard(recordItem);
+      document.getElementById('status').innerText = 'Tap mic to speak';
+    }
+
+    // Direct Text Translation
+    async function submitTextTranslation() {
+      const text = document.getElementById('text-input').value.trim();
+      if (!text) return;
+
+      document.getElementById('text-result').style.display = 'none';
+      const formData = new FormData();
+      formData.append('text', text);
+      formData.append('direction', textDirection);
+
+      try {
+        const res = await fetch('/translate-text', { method: 'POST', body: formData });
+        const data = await res.json();
+        document.getElementById('text-result').style.display = 'flex';
+        document.getElementById('text-result-body').innerText = data.translation || 'Error translating';
+        document.getElementById('text-result-phonetic').innerText = data.pronunciation ? `Tanglish: "${data.pronunciation}"` : '';
+        textResultAudioBase64 = data.audio_base64 || '';
+        if (autoSpeak && textResultAudioBase64) playBase64Audio(textResultAudioBase64);
+      } catch (err) {
+        alert('Translation failed. Check connection.');
+      }
+    }
+
+    function playTextResultAudio() {
+      if (textResultAudioBase64) playBase64Audio(textResultAudioBase64);
+    }
+
+    // UI DOM Helpers
+    function appendConvoCard(item, isOffline = false) {
+      const feed = document.getElementById('convo-feed');
+      const card = document.createElement('div');
+      const isTa = item.direction === 'ta_to_en';
+      card.className = `msg-card ${isTa ? 'ta' : 'en'}`;
+      
+      card.innerHTML = `
+        <div class="msg-meta">
+          <span>${isTa ? 'Tamil ➔ English' : 'English ➔ Tamil'}</span>
+          <span>${item.timestamp || 'Just now'}</span>
+        </div>
+        <div class="msg-original">${item.spoken || (isOffline ? 'Audio recorded (Saved offline)' : 'Processing...')}</div>
+        <div class="msg-translated">${item.translation || ''}</div>
+        ${item.pronunciation ? `<div class="msg-phonetic">Tanglish: "${item.pronunciation}"</div>` : ''}
+        <div class="msg-tools">
+          <button class="tool-btn" onclick="playOriginalItemAudio(${item.id})">▶ Original</button>
+          ${item.audioBase64 ? `<button class="tool-btn" onclick="playBase64Audio('${item.audioBase64}')">🔊 Speak</button>` : ''}
+        </div>
+      `;
+      feed.appendChild(card);
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    // IndexedDB Operations
+    function saveToDB(item) {
+      if (!db) return;
+      const tx = db.transaction('recordings', 'readwrite');
+      tx.objectStore('recordings').add(item);
+      tx.oncomplete = () => {
+        updateLibraryBadge();
+      };
+    }
+
+    function updateLibraryBadge() {
+      if (!db) return;
+      const tx = db.transaction('recordings', 'readonly');
+      const countReq = tx.objectStore('recordings').count();
+      countReq.onsuccess = () => {
+        document.getElementById('lib-count').innerText = countReq.result;
+      };
+    }
+
+    function renderLibrary() {
+      if (!db) return;
+      const list = document.getElementById('library-list');
+      list.innerHTML = '';
+      const tx = db.transaction('recordings', 'readonly');
+      const store = tx.objectStore('recordings');
+      store.openCursor(null, 'prev').onsuccess = e => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const row = cursor.value;
+          const id = cursor.key;
+          const div = document.createElement('div');
+          div.className = 'library-item';
+          div.innerHTML = `
+            <div class="library-header">
+              <span>${row.direction === 'ta_to_en' ? 'Tamil ➔ English' : 'English ➔ Tamil'}</span>
+              <span>${row.timestamp}</span>
+            </div>
+            <div class="library-title">${row.spoken || 'Offline Audio Recording'}</div>
+            <div style="font-size: 0.9rem; color: #60a5fa;">${row.translation || 'Pending Translation'}</div>
+            <div class="msg-tools">
+              <button class="tool-btn" onclick="playOriginalItemAudio(${id})">▶ Play Audio</button>
+              ${row.status === 'saved_offline' ? `<button class="tool-btn" style="background:#2563eb;" onclick="translateOfflineRecord(${id})">⚡ Translate Now</button>` : ''}
+              <button class="tool-btn" style="background:#7f1d1d;" onclick="deleteRecord(${id})">🗑 Delete</button>
+            </div>
+          `;
+          list.appendChild(div);
+          cursor.continue();
+        }
+      };
+      updateLibraryBadge();
+    }
+
+    function playOriginalItemAudio(id) {
+      if (!db) return;
+      const tx = db.transaction('recordings', 'readonly');
+      tx.objectStore('recordings').get(id).onsuccess = e => {
+        const item = e.target.result;
+        if (item && item.audioBlob) playBlobAudio(item.audioBlob);
+      };
+    }
+
+    async function translateOfflineRecord(id) {
+      if (!navigator.onLine) {
+        alert('Still offline. Connect to mobile data or Wi-Fi to translate.');
+        return;
+      }
+      const tx = db.transaction('recordings', 'readwrite');
+      const store = tx.objectStore('recordings');
+      store.get(id).onsuccess = async e => {
+        const item = e.target.result;
+        const formData = new FormData();
+        formData.append('audio', item.audioBlob, 'speech.webm');
+        formData.append('direction', item.direction);
+
+        try {
+          const response = await fetch('/translate-audio', { method: 'POST', body: formData });
+          const data = await response.json();
+          item.spoken = data.spoken || '';
+          item.translation = data.translation || '';
+          item.pronunciation = data.pronunciation || '';
+          item.audioBase64 = data.audio_base64 || '';
+          item.status = 'completed';
+
+          const updateTx = db.transaction('recordings', 'readwrite');
+          updateTx.objectStore('recordings').put(item);
+          updateTx.oncomplete = () => renderLibrary();
+        } catch (err) {
+          alert('Failed to connect to translation server.');
+        }
+      };
+    }
+
+    function deleteRecord(id) {
+      if (!db) return;
+      const tx = db.transaction('recordings', 'readwrite');
+      tx.objectStore('recordings').delete(id);
+      tx.oncomplete = () => renderLibrary();
+    }
+
+    function clearAllLibrary() {
+      if (!confirm('Permanently delete all saved local recordings?')) return;
+      const tx = db.transaction('recordings', 'readwrite');
+      tx.objectStore('recordings').clear();
+      tx.oncomplete = () => renderLibrary();
+    }
+
+    function exportRecordsTxt() {
+      if (!db) return;
+      const tx = db.transaction('recordings', 'readonly');
+      let textContent = `FIELDWORK TRANSLATION EXPORT\\nGenerated: ${new Date().toLocaleString()}\\n====================================\\n\\n`;
+      tx.objectStore('recordings').openCursor().onsuccess = e => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const item = cursor.value;
+          textContent += `[${item.timestamp}] (${item.direction === 'ta_to_en' ? 'Tamil -> English' : 'English -> Tamil'})\\n`;
+          textContent += `Spoken: ${item.spoken || 'N/A'}\\n`;
+          textContent += `Translation: ${item.translation || 'N/A'}\\n`;
+          if (item.pronunciation) textContent += `Tanglish: ${item.pronunciation}\\n`;
+          textContent += `------------------------------------\\n\\n`;
+          cursor.continue();
+        } else {
+          const blob = new Blob([textContent], { type: 'text/plain' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `fieldwork_translations_${Date.now()}.txt`;
+          a.click();
+        }
+      };
     }
   </script>
 </body>
@@ -235,17 +562,21 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
     
     if direction == "ta_to_en":
         prompt = (
-            "You are an assistant for field researchers in Tamil Nadu. "
-            "Listen to this Tamil speech. Extract spoken Tamil, translate into clean, natural English. "
-            "Respond ONLY with a JSON object containing keys: spoken, translation, pronunciation (leave pronunciation empty string)."
+            "You are an expert field assistant translating spoken Tamil to English for community researchers in Tamil Nadu. "
+            "1. Listen carefully to the Tamil audio. "
+            "2. Accurately capture colloquial and conversational Tamil expressions. "
+            "3. Translate into clear, practical, meaning-focused English (avoid rigid word-for-word translation). "
+            "4. If the speech is indistinct or background noise only, state '[Indistinct speech]' without making up facts. "
+            "Respond strictly with a JSON object containing keys: 'spoken', 'translation', 'pronunciation' (leave pronunciation as empty string)."
         )
         target_lang = "en"
     else:
         prompt = (
-            "You are an assistant for field researchers in Tamil Nadu. "
-            "Listen to this English speech. Extract spoken English, translate into natural colloquial spoken Tamil script. "
-            "Provide phonetic Tanglish pronunciation in English letters. "
-            "Respond ONLY with a JSON object containing keys: spoken, translation, pronunciation."
+            "You are an expert field assistant translating English into spoken Tamil for community researchers in Tamil Nadu. "
+            "1. Translate English into natural, polite, everyday spoken Tamil (colloquial conversational register). "
+            "2. Provide an easy-to-read Tanglish pronunciation guide in English Latin letters. "
+            "3. If speech is indistinct, state '[Indistinct speech]'. "
+            "Respond strictly with a JSON object containing keys: 'spoken', 'translation', 'pronunciation'."
         )
         target_lang = "ta"
 
@@ -261,13 +592,41 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
             )
         )
         data = json.loads(response.text)
-        
         translation_text = data.get("translation", "")
         data["audio_base64"] = generate_fast_audio(translation_text, target_lang) if translation_text else ""
-        
         return data
     except Exception as e:
-        return {"error": f"Error processing audio: {str(e)}"}
+        return {"error": f"Audio processing error: {str(e)}"}
+
+@app.post("/translate-text")
+async def translate_text(text: str = Form(...), direction: str = Form(...)):
+    if direction == "ta_to_en":
+        prompt = (
+            "Translate this Tamil text into clear, simple conversational English focusing on the core meaning: "
+            f"'{text}'. Respond strictly in JSON with keys: 'spoken', 'translation', 'pronunciation'."
+        )
+        target_lang = "en"
+    else:
+        prompt = (
+            "Translate this English text into natural, polite spoken Tamil script and provide a Tanglish phonetic pronunciation: "
+            f"'{text}'. Respond strictly in JSON with keys: 'spoken', 'translation', 'pronunciation'."
+        )
+        target_lang = "ta"
+
+    try:
+        response = client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=[prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        data = json.loads(response.text)
+        translation_text = data.get("translation", "")
+        data["audio_base64"] = generate_fast_audio(translation_text, target_lang) if translation_text else ""
+        return data
+    except Exception as e:
+        return {"error": f"Text processing error: {str(e)}"}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
