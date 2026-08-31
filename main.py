@@ -1,11 +1,14 @@
 import os
 import json
+import base64
+import io
 import uvicorn
 from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from google import genai
 from google.genai import types
+from gtts import gTTS
 
 app = FastAPI()
 
@@ -16,6 +19,16 @@ class TranslationResponse(BaseModel):
     spoken: str
     translation: str
     pronunciation: str
+
+def generate_audio_b64(text: str, lang: str) -> str:
+    try:
+        tts = gTTS(text=text, lang=lang, slow=False)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        return base64.b64encode(fp.read()).decode("utf-8")
+    except Exception:
+        return ""
 
 @app.get("/manifest.json")
 async def manifest():
@@ -163,7 +176,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div id="text-result-body" class="msg-translated">—</div>
         <div id="text-result-phonetic" class="msg-phonetic"></div>
         <div class="msg-tools">
-          <button class="tool-btn" onclick="speakText(document.getElementById('text-result-body').innerText, textDirection === 'en_to_ta' ? 'ta' : 'en')">🔊 Listen</button>
+          <button class="tool-btn" id="btn-speak-text" onclick="playTextAudio()">🔊 Listen</button>
         </div>
       </div>
     </div>
@@ -205,7 +218,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="status-text">Tap mic to speak</div>
   </div>
 
-  <audio id="audio-player"></audio>
+  <audio id="audio-player" playsinline preload="auto"></audio>
 
   <script>
     let currentDirection = 'ta_to_en';
@@ -216,16 +229,35 @@ HTML_CONTENT = """<!DOCTYPE html>
     let isRecording = false;
     let recordTimerInterval = null;
     let recordSeconds = 0;
+    let latestTextAudioB64 = '';
 
-    function speakText(text, lang) {
-      if (!text || !('speechSynthesis' in window)) return;
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = lang === 'ta' ? 'ta-IN' : 'en-US';
-      utterance.rate = 0.95;
-      window.speechSynthesis.speak(utterance);
+    const player = document.getElementById('audio-player');
+
+    // Unlock audio context on first user interaction (critical for mobile browsers)
+    function unlockAudio() {
+      if (player.paused && !player.src) {
+        player.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+        player.play().catch(() => {});
+      }
     }
 
+    function playBase64(b64) {
+      if (!b64) return;
+      player.src = 'data:audio/mp3;base64,' + b64;
+      player.play().catch(e => console.log('Playback error:', e));
+    }
+
+    function playBlobAudio(blob) {
+      if (!blob) return;
+      player.src = URL.createObjectURL(blob);
+      player.play().catch(e => console.log('Playback error:', e));
+    }
+
+    function playTextAudio() {
+      if (latestTextAudioB64) playBase64(latestTextAudioB64);
+    }
+
+    // Database Initialization
     let db;
     const dbReq = indexedDB.open('FieldTranslatorDB', 1);
     dbReq.onupgradeneeded = e => {
@@ -281,14 +313,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('auto-speak-toggle').style.opacity = autoSpeak ? '1' : '0.4';
     }
 
-    function playBlobAudio(blob) {
-      if (!blob) return;
-      const player = document.getElementById('audio-player');
-      player.src = URL.createObjectURL(blob);
-      player.play();
-    }
-
     async function toggleRecord() {
+      unlockAudio();
       if (!isRecording) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
@@ -359,6 +385,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function handleFileUpload(e) {
+      unlockAudio();
       const file = e.target.files[0];
       if (!file) return;
 
@@ -378,6 +405,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         spoken: '',
         translation: '',
         pronunciation: '',
+        audioBase64: '',
         status: navigator.onLine ? 'translating' : 'saved_offline'
       };
 
@@ -404,10 +432,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           recordItem.spoken = data.spoken || '';
           recordItem.translation = data.translation || '';
           recordItem.pronunciation = data.pronunciation || '';
+          recordItem.audioBase64 = data.audio_base64 || '';
           recordItem.status = 'completed';
 
-          if (autoSpeak && recordItem.translation) {
-            speakText(recordItem.translation, direction === 'ta_to_en' ? 'en' : 'ta');
+          if (autoSpeak && recordItem.audioBase64) {
+            playBase64(recordItem.audioBase64);
           }
         }
       } catch (err) {
@@ -429,6 +458,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     async function submitTextTranslation() {
+      unlockAudio();
       const text = document.getElementById('text-input').value.trim();
       if (!text) return;
 
@@ -443,9 +473,10 @@ HTML_CONTENT = """<!DOCTYPE html>
         document.getElementById('text-result').style.display = 'flex';
         document.getElementById('text-result-body').innerText = data.translation || 'Error translating';
         document.getElementById('text-result-phonetic').innerText = data.pronunciation ? `Tanglish: "${data.pronunciation}"` : '';
+        latestTextAudioB64 = data.audio_base64 || '';
         
-        if (autoSpeak && data.translation) {
-          speakText(data.translation, textDirection === 'en_to_ta' ? 'ta' : 'en');
+        if (autoSpeak && latestTextAudioB64) {
+          playBase64(latestTextAudioB64);
         }
       } catch (err) {
         alert('Translation failed. Check connection.');
@@ -458,9 +489,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       const isTa = item.direction === 'ta_to_en';
       card.className = `msg-card ${isTa ? 'ta' : 'en'}`;
       
-      const targetLang = isTa ? 'en' : 'ta';
-      const escapedTrans = (item.translation || '').replace(/'/g, "\\'");
-
       card.innerHTML = `
         <div class="msg-meta">
           <span>${isTa ? 'Tamil ➔ English' : 'English ➔ Tamil'}</span>
@@ -471,7 +499,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         ${item.pronunciation ? `<div class="msg-phonetic">Tanglish: "${item.pronunciation}"</div>` : ''}
         <div class="msg-tools">
           <button class="tool-btn" onclick="playOriginalItemAudio(${item.id})">▶ Original</button>
-          ${item.translation ? `<button class="tool-btn" onclick="speakText('${escapedTrans}', '${targetLang}')">🔊 Speak</button>` : ''}
+          ${item.audioBase64 ? `<button class="tool-btn" onclick="playBase64('${item.audioBase64}')">🔊 Speak</button>` : ''}
         </div>
       `;
       feed.appendChild(card);
@@ -516,6 +544,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <div style="font-size: 0.9rem; color: #60a5fa;">${row.translation || 'Pending Translation'}</div>
             <div class="msg-tools">
               <button class="tool-btn" onclick="playOriginalItemAudio(${id})">▶ Play Audio</button>
+              ${row.audioBase64 ? `<button class="tool-btn" onclick="playBase64('${row.audioBase64}')">🔊 Speak</button>` : ''}
               ${row.status === 'saved_offline' ? `<button class="tool-btn" style="background:#2563eb;" onclick="translateOfflineRecord(${id})">⚡ Translate Now</button>` : ''}
               <button class="tool-btn" style="background:#7f1d1d;" onclick="deleteRecord(${id})">🗑 Delete</button>
             </div>
@@ -555,6 +584,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           item.spoken = data.spoken || '';
           item.translation = data.translation || '';
           item.pronunciation = data.pronunciation || '';
+          item.audioBase64 = data.audio_base64 || '';
           item.status = 'completed';
 
           const updateTx = db.transaction('recordings', 'readwrite');
@@ -624,12 +654,14 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
             "2. Translate meaning into natural conversational English. "
             "Leave pronunciation empty."
         )
+        target_lang = "en"
     else:
         prompt = (
             "Fieldwork English-to-Tamil translator. "
             "1. Translate English into polite colloquial spoken Tamil (Pechu Tamizh). "
             "2. Provide phonetic Tanglish pronunciation in English Latin letters."
         )
+        target_lang = "ta"
 
     try:
         response = client.models.generate_content(
@@ -644,7 +676,10 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
                 temperature=0.2
             )
         )
-        return json.loads(response.text)
+        data = json.loads(response.text)
+        trans = data.get("translation", "")
+        data["audio_base64"] = generate_audio_b64(trans, target_lang) if trans else ""
+        return data
     except Exception as e:
         return {"error": f"Audio processing error: {str(e)}"}
 
@@ -655,10 +690,12 @@ async def translate_text(text: str = Form(...), direction: str = Form(...)):
             f"Translate spoken Tamil to conversational English: '{text}'. "
             "Leave pronunciation empty."
         )
+        target_lang = "en"
     else:
         prompt = (
             f"Translate English to polite spoken Tamil with Tanglish pronunciation: '{text}'."
         )
+        target_lang = "ta"
 
     try:
         response = client.models.generate_content(
@@ -670,7 +707,10 @@ async def translate_text(text: str = Form(...), direction: str = Form(...)):
                 temperature=0.2
             )
         )
-        return json.loads(response.text)
+        data = json.loads(response.text)
+        trans = data.get("translation", "")
+        data["audio_base64"] = generate_audio_b64(trans, target_lang) if trans else ""
+        return data
     except Exception as e:
         return {"error": f"Text processing error: {str(e)}"}
 
