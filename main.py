@@ -21,15 +21,16 @@ class TranslationResponse(BaseModel):
     translation: str
     pronunciation: str
 
-def generate_male_audio(text: str, lang: str) -> str:
-    """
-    Generates TTS audio configured for male vocal characteristics (tld accent tuning).
-    Tamil (ta) uses standard regional synthesis, English uses 'co.in' / 'co.uk' accents.
-    """
+def generate_tts_audio(text: str, lang: str, gender: str = "male") -> str:
     if not text or text.strip() == "" or text.startswith("["):
         return ""
     try:
-        tld_accent = "co.in" if lang == "en" else "com"
+        # Male voice tuning uses regional accents; Female voice uses standard defaults
+        if lang == "en":
+            tld_accent = "co.in" if gender == "male" else "us"
+        else:
+            tld_accent = "co.in" if gender == "male" else "com"
+
         tts = gTTS(text=text, lang=lang, tld=tld_accent, slow=False)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
@@ -87,33 +88,29 @@ HTML_CONTENT = """<!DOCTYPE html>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
     body { background-color: var(--bg-dark); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 
-    /* Top Bar */
     header { background: #0c1322; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; z-index: 10; }
     .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 1rem; color: var(--accent-cyan); letter-spacing: 0.5px; }
     .header-badges { display: flex; align-items: center; gap: 8px; }
     .status-pill { font-size: 0.7rem; padding: 3px 8px; border-radius: 20px; background: #064e3b; color: #34d399; font-weight: 700; text-transform: uppercase; }
     .status-pill.offline { background: #7f1d1d; color: #fca5a5; }
 
-    /* Navigation Tabs */
+    .voice-select { background: #131d31; border: 1px solid var(--border-color); color: var(--accent-cyan); font-size: 0.75rem; font-weight: 600; padding: 3px 6px; border-radius: 8px; outline: none; }
+
     nav.app-tabs { display: flex; background: #0c1322; border-bottom: 1px solid var(--border-color); }
     .tab-btn { flex: 1; padding: 12px 6px; border: none; background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.8rem; cursor: pointer; border-bottom: 2px solid transparent; display: flex; align-items: center; justify-content: center; gap: 5px; }
     .tab-btn.active { color: var(--accent-cyan); border-bottom-color: var(--accent-cyan); background: rgba(56, 189, 248, 0.05); }
 
-    /* Privacy Ribbon */
     .privacy-banner { background: #09101d; padding: 5px 12px; font-size: 0.7rem; color: #64748b; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #141e33; }
 
-    /* Main Container Views */
     main { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; }
     .view-section { display: none; flex-direction: column; height: 100%; gap: 1rem; }
     .view-section.active { display: flex; }
 
-    /* Mode Selector Banner */
     .direction-container { display: flex; background: #0b1325; border: 1px solid #1e2d4a; border-radius: 14px; padding: 4px; gap: 6px; align-items: center; }
     .dir-toggle-btn { flex: 1; padding: 12px; border: none; background: transparent; font-weight: 700; font-size: 0.9rem; border-radius: 10px; cursor: pointer; color: var(--text-muted); transition: all 0.2s; }
     .dir-toggle-btn.active { background: var(--accent-blue); color: #ffffff; box-shadow: 0 2px 10px rgba(2, 132, 199, 0.4); }
     .swap-btn { background: #1a2744; border: 1px solid #2a3c63; width: 36px; height: 36px; border-radius: 50%; color: var(--accent-cyan); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; }
 
-    /* Interactive Cards */
     .feed-container { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.85rem; padding-bottom: 0.5rem; }
     .record-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 16px; padding: 1rem; display: flex; flex-direction: column; gap: 0.6rem; position: relative; }
     .record-card.ta-source { border-left: 4px solid var(--accent-emerald); }
@@ -127,12 +124,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     .record-card.ta-source .translation-text { color: #34d399; }
     .phonetic-guide { font-size: 0.85rem; color: #7dd3fc; font-style: italic; }
 
-    /* Dual Voice Control Panel */
     .dual-audio-dock { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; padding-top: 8px; border-top: 1px solid #1c2b48; }
     .audio-play-btn { background: #17233d; border: 1px solid #273a63; border-radius: 10px; padding: 8px 10px; color: #e2e8f0; font-size: 0.75rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; }
     .audio-play-btn.accent { background: #0c3358; border-color: #0284c7; color: #38bdf8; }
 
-    /* Bottom Control Cockpit */
     .controls-cockpit { background: #0c1322; border-top: 1px solid var(--border-color); padding: 0.85rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; z-index: 10; }
     .visualizer-canvas { width: 100%; height: 26px; display: none; }
     .visualizer-canvas.active { display: block; }
@@ -140,7 +135,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     .cockpit-row { display: flex; align-items: center; justify-content: center; width: 100%; gap: 1.8rem; position: relative; }
     .sub-action-btn { width: 46px; height: 46px; border-radius: 50%; background: #131d31; border: 1px solid var(--border-color); color: #e2e8f0; font-size: 1.2rem; display: flex; align-items: center; justify-content: center; cursor: pointer; }
     
-    /* Dynamic Microphone Engine */
     .mic-rig { position: relative; width: 88px; height: 88px; display: flex; align-items: center; justify-content: center; }
     .mic-sonar-wave { position: absolute; width: 100%; height: 100%; border-radius: 50%; border: 2px solid var(--accent-rose); opacity: 0; pointer-events: none; }
     .is-listening .mic-sonar-wave { animation: sonar 1.4s cubic-bezier(0, 0.2, 0.8, 1) infinite; }
@@ -153,22 +147,24 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     .cockpit-status { font-size: 0.85rem; font-weight: 600; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
 
-    /* Text Translate & Upload Forms */
     .form-box { width: 100%; min-height: 110px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 14px; padding: 0.85rem; color: #fff; font-size: 1rem; resize: none; outline: none; }
     .form-box:focus { border-color: var(--accent-cyan); }
     .submit-btn { background: var(--accent-blue); color: #fff; border: none; padding: 12px 18px; border-radius: 12px; font-weight: 700; font-size: 0.95rem; cursor: pointer; width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; }
     
     .upload-dropzone { border: 2px dashed #243556; background: #0d1527; border-radius: 16px; padding: 2rem 1rem; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 0.75rem; cursor: pointer; }
     
-    /* Library Cards */
     .library-stream { display: flex; flex-direction: column; gap: 0.85rem; overflow-y: auto; }
     .library-item { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 14px; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
   </style>
 </head>
 <body>
   <header>
-    <div class="brand">⚡ Field Assistant <span style="font-size:0.7rem; color:#64748b; font-weight:500;">v2.0</span></div>
+    <div class="brand">⚡ Field Assistant</div>
     <div class="header-badges">
+      <select id="voice-gender" class="voice-select" onchange="updateVoiceGender(this.value)">
+        <option value="male" selected>🎙️ Male Voice</option>
+        <option value="female">🎙️ Female Voice</option>
+      </select>
       <span id="network-pill" class="status-pill">ONLINE</span>
       <button class="audio-play-btn" style="padding:4px 8px;" onclick="exportRecordsTxt()">📤 Export</button>
     </div>
@@ -200,7 +196,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div class="record-card ta-source">
           <div class="card-meta-row">
             <span>System Console</span>
-            <span class="expiry-tag">Default: Male Voice</span>
+            <span class="expiry-tag" id="current-voice-badge">Voice: Male</span>
           </div>
           <div class="transcript-text">Ready for fieldwork. Tap the microphone to record speech. Original audio is preserved separately from the translated voice.</div>
         </div>
@@ -229,12 +225,12 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div id="text-result-box" class="record-card" style="display:none;">
         <div class="card-meta-row">
           <span>Translation Output</span>
-          <span class="expiry-tag">Male Voice</span>
+          <span class="expiry-tag" id="text-voice-badge">Voice: Male</span>
         </div>
         <div id="text-result-trans" class="translation-text">—</div>
         <div id="text-result-phonetic" class="phonetic-guide"></div>
         <div class="dual-audio-dock">
-          <button class="audio-play-btn accent" onclick="playTextAudio()">🔊 Play Male Voice</button>
+          <button class="audio-play-btn accent" onclick="playTextAudio()">🔊 Play Translated Voice</button>
           <button class="audio-play-btn" onclick="saveTextTranslationRecord()">💾 Save to Library</button>
         </div>
       </div>
@@ -282,7 +278,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <button id="main-mic-btn" class="main-mic-trigger" onclick="toggleMainRecording()">🎤</button>
       </div>
 
-      <button class="sub-action-btn" id="auto-speak-toggle" title="Toggle Male Voice Auto-Speak" onclick="toggleAutoSpeak()">
+      <button class="sub-action-btn" id="auto-speak-toggle" title="Toggle Auto-Speak" onclick="toggleAutoSpeak()">
         🔊
       </button>
     </div>
@@ -296,6 +292,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     let currentDirection = 'ta_to_en';
     let textDirection = 'ta_to_en';
     let uploadDirection = 'ta_to_en';
+    let selectedGender = localStorage.getItem('voice_gender') || 'male';
     let autoSpeak = true;
     let isRecording = false;
     let isDraftMode = false;
@@ -311,7 +308,27 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     const player = document.getElementById('primary-audio-player');
 
-    // Unlock audio context for mobile iOS/Android autoplay
+    // Initialize saved voice preference in UI
+    document.addEventListener('DOMContentLoaded', () => {
+      const select = document.getElementById('voice-gender');
+      if (select) select.value = selectedGender;
+      updateVoiceBadgeText();
+    });
+
+    function updateVoiceGender(gender) {
+      selectedGender = gender;
+      localStorage.setItem('voice_gender', gender);
+      updateVoiceBadgeText();
+    }
+
+    function updateVoiceBadgeText() {
+      const badge = document.getElementById('current-voice-badge');
+      const textBadge = document.getElementById('text-voice-badge');
+      const label = selectedGender === 'male' ? 'Voice: Male' : 'Voice: Female';
+      if (badge) badge.innerText = label;
+      if (textBadge) textBadge.innerText = label;
+    }
+
     function unlockAudio() {
       if (player.paused && !player.src) {
         player.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
@@ -337,9 +354,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
-    // ==========================================
     // INDEXEDDB + STRICT 4-DAY DATE PURGE ENGINE
-    // ==========================================
     let db;
     const dbReq = indexedDB.open('FieldAssistantDB', 2);
     dbReq.onupgradeneeded = e => {
@@ -350,7 +365,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     };
     dbReq.onsuccess = e => {
       db = e.target.result;
-      purgeExpiredRecords(); // Enforce strict 4-day expiry on startup
+      purgeExpiredRecords();
       renderLibrary();
     };
 
@@ -398,9 +413,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       };
     }
 
-    // ==========================================
-    // UI NAVIGATION & TAB SWITCHING
-    // ==========================================
     function switchView(viewName) {
       document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
         const match = (viewName === 'translate' && idx === 0) ||
@@ -458,9 +470,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('auto-speak-toggle').style.opacity = autoSpeak ? '1' : '0.4';
     }
 
-    // ==========================================
-    // AUDIO RECORDING & VISUALIZER ENGINE
-    // ==========================================
     async function toggleMainRecording() {
       unlockAudio();
       if (!isRecording) {
@@ -486,7 +495,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
         });
 
-        // Setup real-time waveform visualizer
         try {
           audioContext = new (window.AudioContext || window.webkitAudioContext)();
           const source = audioContext.createMediaStreamSource(stream);
@@ -510,7 +518,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         mediaRecorder.start();
         isRecording = true;
 
-        // Cockpit Visual States
         const mic = document.getElementById('main-mic-btn');
         const rig = document.getElementById('mic-rig');
         mic.classList.add('is-recording');
@@ -548,7 +555,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (!isDraftMode) {
         mic.classList.add('is-translating');
         mic.innerText = '⏳';
-        document.getElementById('status-readout').innerText = 'AI Translating (Male Voice)...';
+        document.getElementById('status-readout').innerText = `AI Translating (${selectedGender} voice)...`;
       } else {
         mic.innerText = '🎤';
         document.getElementById('status-readout').innerText = 'Saved to Library';
@@ -585,14 +592,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       canvas.classList.remove('active');
     }
 
-    // ==========================================
-    // RECORDING PROCESSING & PIPELINE
-    // ==========================================
     async function handleRecordingComplete() {
       const mime = mediaRecorder.mimeType || 'audio/webm';
       const audioBlob = new Blob(audioChunks, { type: mime });
       
-      // Basic silence detection safeguard
       if (audioBlob.size < 1200 && !isDraftMode) {
         alert("No speech detected. Please speak clearly and try again.");
         resetMicUi();
@@ -621,6 +624,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         dateStr: now.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }),
         timeStr: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         direction: direction,
+        gender: selectedGender,
         originalAudioBlob: blobOrFile,
         spoken: '',
         translation: '',
@@ -633,6 +637,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const formData = new FormData();
         formData.append('audio', blobOrFile, blobOrFile.name || 'speech.webm');
         formData.append('direction', direction);
+        formData.append('gender', selectedGender);
 
         try {
           const res = await fetch('/translate-audio', { method: 'POST', body: formData });
@@ -671,9 +676,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('status-readout').innerText = 'Tap mic to speak';
     }
 
-    // ==========================================
-    // TEXT TRANSLATE & RECORD CREATION
-    // ==========================================
     async function submitTextTranslation() {
       unlockAudio();
       const text = document.getElementById('text-input').value.trim();
@@ -683,6 +685,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const formData = new FormData();
       formData.append('text', text);
       formData.append('direction', textDirection);
+      formData.append('gender', selectedGender);
 
       try {
         const res = await fetch('/translate-text', { method: 'POST', body: formData });
@@ -693,6 +696,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           dateStr: new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }),
           timeStr: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           direction: textDirection,
+          gender: selectedGender,
           originalAudioBlob: null,
           spoken: text,
           translation: data.translation || '',
@@ -719,12 +723,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       alert('Saved to Library (4-day auto retention).');
     }
 
-    // ==========================================
-    // CARD RENDERING (TRANSLATE & CONVERSATION)
-    // ==========================================
     function appendLiveRecordCard(item) {
       const exp = calculateExpiry(item.isoDate);
       const isTa = item.direction === 'ta_to_en';
+      const voiceLabel = (item.gender || selectedGender) === 'male' ? 'Male Voice' : 'Female Voice';
       
       const cardHtml = `
         <div class="record-card ${isTa ? 'ta-source' : 'en-source'}">
@@ -736,31 +738,26 @@ HTML_CONTENT = """<!DOCTYPE html>
           <div class="section-title">🎙️ Original Speech</div>
           <div class="transcript-text">${item.spoken || (item.status === 'draft_saved' ? 'Audio recorded (Saved offline)' : 'Processing...')}</div>
           
-          <div class="section-title" style="margin-top:6px;">🌐 Translation (${isTa ? 'English Male' : 'Tamil Male'})</div>
+          <div class="section-title" style="margin-top:6px;">🌐 Translation (${voiceLabel})</div>
           <div class="translation-text">${item.translation || ''}</div>
           ${item.pronunciation ? `<div class="phonetic-guide">Tanglish: "${item.pronunciation}"</div>` : ''}
           
           <div class="dual-audio-dock">
             <button class="audio-play-btn" onclick="playRecordOriginal(${item.id})">🎙️ Original Voice</button>
-            ${item.audioBase64 ? `<button class="audio-play-btn accent" onclick="playBase64Audio('${item.audioBase64}')">🔊 Male Voice</button>` : ''}
+            ${item.audioBase64 ? `<button class="audio-play-btn accent" onclick="playBase64Audio('${item.audioBase64}')">🔊 ${voiceLabel}</button>` : ''}
             ${item.status === 'draft_saved' ? `<button class="audio-play-btn accent" onclick="translateDraftRecord(${item.id})">⚡ Translate</button>` : ''}
           </div>
         </div>
       `;
 
-      // Append to Translate feed
       const transFeed = document.getElementById('translate-feed');
       transFeed.insertAdjacentHTML('afterbegin', cardHtml);
 
-      // Append to Conversation feed
       const convoFeed = document.getElementById('convo-feed');
       convoFeed.insertAdjacentHTML('beforeend', cardHtml);
       convoFeed.scrollTop = convoFeed.scrollHeight;
     }
 
-    // ==========================================
-    // LIBRARY STORAGE & EXPIRATION MANAGEMENT
-    // ==========================================
     function saveRecordToIndexedDB(item) {
       if (!db) return;
       const tx = db.transaction('records', 'readwrite');
@@ -785,6 +782,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           const row = cursor.value;
           const id = cursor.key;
           const exp = calculateExpiry(row.isoDate);
+          const voiceLabel = (row.gender || 'male') === 'male' ? 'Male Voice' : 'Female Voice';
 
           const div = document.createElement('div');
           div.className = 'library-item';
@@ -799,7 +797,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             
             <div class="dual-audio-dock">
               ${row.originalAudioBlob ? `<button class="audio-play-btn" onclick="playRecordOriginal(${id})">🎙️ Original</button>` : ''}
-              ${row.audioBase64 ? `<button class="audio-play-btn accent" onclick="playBase64Audio('${row.audioBase64}')">🔊 Male Voice</button>` : ''}
+              ${row.audioBase64 ? `<button class="audio-play-btn accent" onclick="playBase64Audio('${row.audioBase64}')">🔊 ${voiceLabel}</button>` : ''}
               ${row.status === 'draft_saved' ? `<button class="audio-play-btn accent" onclick="translateDraftRecord(${id})">⚡ Translate</button>` : ''}
               <button class="audio-play-btn" style="background:#7f1d1d; border-color:#991b1b;" onclick="deleteSingleRecord(${id})">🗑 Delete</button>
             </div>
@@ -832,6 +830,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const formData = new FormData();
         formData.append('audio', item.originalAudioBlob, 'speech.webm');
         formData.append('direction', item.direction);
+        formData.append('gender', selectedGender);
 
         try {
           const res = await fetch('/translate-audio', { method: 'POST', body: formData });
@@ -840,6 +839,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           item.translation = data.translation || '';
           item.pronunciation = data.pronunciation || '';
           item.audioBase64 = data.audio_base64 || '';
+          item.gender = selectedGender;
           item.status = 'completed';
 
           const updateTx = db.transaction('records', 'readwrite');
@@ -898,7 +898,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       };
     }
 
-    // Network Watcher
     function updateOnlineBadge() {
       const pill = document.getElementById('network-pill');
       if (navigator.onLine) {
@@ -922,7 +921,11 @@ async def serve_ui():
     return HTML_CONTENT
 
 @app.post("/translate-audio")
-async def translate_audio(audio: UploadFile = File(...), direction: str = Form(...)):
+async def translate_audio(
+    audio: UploadFile = File(...),
+    direction: str = Form(...),
+    gender: str = Form("male")
+):
     audio_bytes = await audio.read()
     mime = audio.content_type or 'audio/webm'
 
@@ -960,13 +963,17 @@ async def translate_audio(audio: UploadFile = File(...), direction: str = Form(.
         )
         data = json.loads(response.text)
         trans_text = data.get("translation", "")
-        data["audio_base64"] = generate_male_audio(trans_text, target_voice_lang)
+        data["audio_base64"] = generate_tts_audio(trans_text, target_voice_lang, gender)
         return data
     except Exception as e:
         return {"error": f"Audio processing error: {str(e)}"}
 
 @app.post("/translate-text")
-async def translate_text(text: str = Form(...), direction: str = Form(...)):
+async def translate_text(
+    text: str = Form(...),
+    direction: str = Form(...),
+    gender: str = Form("male")
+):
     if direction == "ta_to_en":
         prompt = (
             f"Translate this spoken Tamil to simple, natural conversational English: '{text}'. "
@@ -991,7 +998,7 @@ async def translate_text(text: str = Form(...), direction: str = Form(...)):
         )
         data = json.loads(response.text)
         trans_text = data.get("translation", "")
-        data["audio_base64"] = generate_male_audio(trans_text, target_voice_lang)
+        data["audio_base64"] = generate_tts_audio(trans_text, target_voice_lang, gender)
         return data
     except Exception as e:
         return {"error": f"Text processing error: {str(e)}"}
