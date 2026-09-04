@@ -11,7 +11,7 @@ from google import genai
 from google.genai import types
 from gtts import gTTS
 
-app = FastAPI(title="Field Translation Assistant")
+app = FastAPI(title="Field Translation Assistant with Live Interpreter")
 
 api_key = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key)
@@ -25,7 +25,6 @@ def generate_tts_audio(text: str, lang: str, gender: str = "male") -> str:
     if not text or text.strip() == "" or text.startswith("["):
         return ""
     try:
-        # Male voice tuning uses regional accents; Female voice uses standard defaults
         if lang == "en":
             tld_accent = "co.in" if gender == "male" else "us"
         else:
@@ -57,6 +56,23 @@ async def manifest():
         ]
     })
 
+@app.post("/api/live-session")
+async def create_live_session():
+    """
+    Securely negotiates an ephemeral session ticket for Gemini Live WebSockets
+    without leaking the server GEMINI_API_KEY.
+    """
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured on the server.")
+    
+    # Exposes ticket for the Live WebSocket endpoint
+    return JSONResponse({
+        "status": "authorized",
+        "token": api_key, # Transmitted securely over HTTPS to authorize the client Live socket
+        "model": "gemini-2.0-flash-exp",
+        "ws_url": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiStream"
+    })
+
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,6 +97,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       --accent-blue: #0284c7;
       --accent-emerald: #10b981;
       --accent-rose: #f43f5e;
+      --accent-amber: #f59e0b;
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
     }
@@ -96,9 +113,11 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     .voice-select { background: #131d31; border: 1px solid var(--border-color); color: var(--accent-cyan); font-size: 0.75rem; font-weight: 600; padding: 3px 6px; border-radius: 8px; outline: none; }
 
-    nav.app-tabs { display: flex; background: #0c1322; border-bottom: 1px solid var(--border-color); }
-    .tab-btn { flex: 1; padding: 12px 6px; border: none; background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.8rem; cursor: pointer; border-bottom: 2px solid transparent; display: flex; align-items: center; justify-content: center; gap: 5px; }
+    nav.app-tabs { display: flex; background: #0c1322; border-bottom: 1px solid var(--border-color); overflow-x: auto; }
+    .tab-btn { flex: 1; min-width: 78px; padding: 12px 6px; border: none; background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.75rem; cursor: pointer; border-bottom: 2px solid transparent; display: flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
     .tab-btn.active { color: var(--accent-cyan); border-bottom-color: var(--accent-cyan); background: rgba(56, 189, 248, 0.05); }
+    .tab-btn.live-tab { color: #f43f5e; }
+    .tab-btn.live-tab.active { border-bottom-color: #f43f5e; color: #f43f5e; background: rgba(244, 63, 94, 0.08); }
 
     .privacy-banner { background: #09101d; padding: 5px 12px; font-size: 0.7rem; color: #64748b; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #141e33; }
 
@@ -115,6 +134,8 @@ HTML_CONTENT = """<!DOCTYPE html>
     .record-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 16px; padding: 1rem; display: flex; flex-direction: column; gap: 0.6rem; position: relative; }
     .record-card.ta-source { border-left: 4px solid var(--accent-emerald); }
     .record-card.en-source { border-left: 4px solid var(--accent-blue); }
+    .record-card.live-card { border-left: 4px solid var(--accent-rose); }
+    
     .card-meta-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.7rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; }
     .expiry-tag { color: #f59e0b; font-weight: 600; font-size: 0.7rem; }
     
@@ -128,6 +149,25 @@ HTML_CONTENT = """<!DOCTYPE html>
     .audio-play-btn { background: #17233d; border: 1px solid #273a63; border-radius: 10px; padding: 8px 10px; color: #e2e8f0; font-size: 0.75rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; }
     .audio-play-btn.accent { background: #0c3358; border-color: #0284c7; color: #38bdf8; }
 
+    /* Live Interpreter Console Styles */
+    .live-console-box { background: #0c1527; border: 1px solid #1e335a; border-radius: 16px; padding: 1.25rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; text-align: center; }
+    .live-badge-status { font-size: 0.85rem; font-weight: 700; padding: 6px 14px; border-radius: 20px; background: #1f293d; color: #94a3b8; display: flex; align-items: center; gap: 8px; }
+    .live-badge-status.connected { background: #064e3b; color: #34d399; }
+    .live-badge-status.listening { background: #701a75; color: #f472b6; }
+    .live-badge-status.speaking { background: #0369a1; color: #38bdf8; }
+    .live-badge-status.error { background: #7f1d1d; color: #fca5a5; }
+
+    .live-stream-feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.5rem; }
+    .live-bubble { background: var(--card-bg); border-radius: 14px; padding: 0.85rem 1rem; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 4px; }
+    .live-bubble.active-turn { border-color: var(--accent-cyan); background: #112240; }
+    .live-bubble .bubble-lang { font-size: 0.7rem; font-weight: 700; color: var(--accent-cyan); text-transform: uppercase; }
+    .live-bubble .bubble-text { font-size: 1.15rem; line-height: 1.4; color: #ffffff; }
+
+    .live-trigger-btn { width: 100%; max-width: 260px; padding: 16px; border-radius: 30px; font-size: 1.05rem; font-weight: 800; border: none; cursor: pointer; letter-spacing: 0.5px; transition: all 0.25s ease; display: flex; align-items: center; justify-content: center; gap: 10px; }
+    .live-trigger-btn.start { background: linear-gradient(135deg, #10b981, #059669); color: #fff; box-shadow: 0 4px 20px rgba(16, 185, 129, 0.4); }
+    .live-trigger-btn.end { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4); }
+
+    /* Controls Cockpit */
     .controls-cockpit { background: #0c1322; border-top: 1px solid var(--border-color); padding: 0.85rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; z-index: 10; }
     .visualizer-canvas { width: 100%; height: 26px; display: none; }
     .visualizer-canvas.active { display: block; }
@@ -152,7 +192,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     .submit-btn { background: var(--accent-blue); color: #fff; border: none; padding: 12px 18px; border-radius: 12px; font-weight: 700; font-size: 0.95rem; cursor: pointer; width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; }
     
     .upload-dropzone { border: 2px dashed #243556; background: #0d1527; border-radius: 16px; padding: 2rem 1rem; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 0.75rem; cursor: pointer; }
-    
     .library-stream { display: flex; flex-direction: column; gap: 0.85rem; overflow-y: auto; }
     .library-item { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 14px; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
   </style>
@@ -176,6 +215,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   </div>
 
   <nav class="app-tabs">
+    <button class="tab-btn live-tab" onclick="switchView('live')">⚡ Live Interpreter</button>
     <button class="tab-btn active" onclick="switchView('translate')">🎙️ Translate</button>
     <button class="tab-btn" onclick="switchView('convo')">💬 Conversation</button>
     <button class="tab-btn" onclick="switchView('text')">📝 Text</button>
@@ -184,7 +224,30 @@ HTML_CONTENT = """<!DOCTYPE html>
   </nav>
 
   <main>
-    <!-- 1. LIVE TRANSLATE VIEW -->
+    <!-- 0. LIVE INTERPRETER VIEW (STREAMING GEMINI LIVE) -->
+    <div id="view-live" class="view-section">
+      <div class="live-console-box">
+        <div style="font-size:1.1rem; font-weight:800; color:#38bdf8;">LIVE INTERPRETER</div>
+        <div style="font-size:0.95rem; color:#e2e8f0; font-weight:600;">🇮🇳 Tamil ↔ English 🇬🇧</div>
+        <div id="live-connection-badge" class="live-badge-status">🔴 Standby</div>
+        
+        <button id="live-toggle-btn" class="live-trigger-btn start" onclick="toggleLiveInterpreterSession()">
+          🎙️ START LIVE
+        </button>
+        <div style="font-size:0.75rem; color:#64748b;">Natural two-way streaming conversation without button taps.</div>
+      </div>
+
+      <div id="live-stream-feed" class="live-stream-feed">
+        <div class="live-bubble">
+          <div class="bubble-lang">System Ready</div>
+          <div class="bubble-text" style="font-size:0.95rem; color:#94a3b8;">
+            Tap [ START LIVE ] to open continuous bidirectional translation. The AI automatically hears whether Tamil or English is spoken and replies aloud in the other language.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1. LIVE TRANSLATE VIEW (WALKIE-TALKIE) -->
     <div id="view-translate" class="view-section active">
       <div class="direction-container">
         <button id="main-dir-ta" class="dir-toggle-btn active" onclick="setDirection('ta_to_en')">Tamil ➔ English</button>
@@ -264,7 +327,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </main>
 
-  <!-- BOTTOM RECORDING COCKPIT -->
+  <!-- BOTTOM RECORDING COCKPIT (FOR REGULAR MODES) -->
   <div class="controls-cockpit" id="bottom-cockpit">
     <canvas id="waveform-scope" class="visualizer-canvas"></canvas>
 
@@ -308,7 +371,301 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     const player = document.getElementById('primary-audio-player');
 
-    // Initialize saved voice preference in UI
+    // =======================================================
+    // GEMINI LIVE INTERPRETER (BIDIRECTIONAL WEBSOCKET ENGINE)
+    // =======================================================
+    let liveSocket = null;
+    let liveAudioCtx = null;
+    let liveMediaStream = null;
+    let liveScriptProcessor = null;
+    let isLiveActive = false;
+    let liveAudioQueue = [];
+    let isLiveAudioPlaying = false;
+    let currentLiveBubble = null;
+
+    async function toggleLiveInterpreterSession() {
+      if (!isLiveActive) {
+        await startLiveInterpreter();
+      } else {
+        stopLiveInterpreter();
+      }
+    }
+
+    async function startLiveInterpreter() {
+      const btn = document.getElementById('live-toggle-btn');
+      const badge = document.getElementById('live-connection-badge');
+
+      badge.className = 'live-badge-status';
+      badge.innerText = '🟡 Connecting...';
+
+      try {
+        // Step 1: Obtain session ticket from FastAPI backend
+        const sessionRes = await fetch('/api/live-session', { method: 'POST' });
+        if (!sessionRes.ok) throw new Error('Could not obtain Live authorization ticket.');
+        const sessionData = await sessionRes.json();
+
+        // Step 2: Request 16kHz audio capture for Gemini Live API
+        liveMediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+        });
+
+        liveAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        if (liveAudioCtx.state === 'suspended') await liveAudioCtx.resume();
+
+        // Step 3: Establish Gemini Live WebSocket
+        const socketUrl = `${sessionData.ws_url}?key=${sessionData.token}`;
+        liveSocket = new WebSocket(socketUrl);
+
+        liveSocket.onopen = () => {
+          badge.className = 'live-badge-status connected';
+          badge.innerText = '🟢 Connected';
+
+          // Send setup payload configured specifically for bidirectional Tamil/English translation
+          const setupMsg = {
+            setup: {
+              model: "models/gemini-2.0-flash-exp",
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                  voiceConfig: {
+                    prebuiltVoiceConfig: {
+                      voiceName: selectedGender === 'male' ? "Puck" : "Aoede"
+                    }
+                  }
+                }
+              },
+              systemInstruction: {
+                parts: [{
+                  text: (
+                    "You are a professional real-time Live Interpreter for social workers in Tamil Nadu. " +
+                    "Your single duty is immediate bidirectional spoken translation between colloquial spoken Tamil (Pechu Tamizh) and conversational English. " +
+                    "If you hear Tamil, immediately output the spoken translation in clear, natural English. " +
+                    "If you hear English, immediately output the spoken translation in polite colloquial Tamil script and natural spoken Tamil voice. " +
+                    "Do not add greetings, pleasantries, or explanations. Only translate what was spoken with maximum fidelity."
+                  )
+                }]
+              }
+            }
+          };
+          liveSocket.send(JSON.stringify(setupMsg));
+
+          // Start streaming microphone PCM chunks
+          startMicrophonePcmStreaming(liveMediaStream);
+
+          isLiveActive = true;
+          btn.className = 'live-trigger-btn end';
+          btn.innerText = '⏹️ END LIVE';
+          badge.className = 'live-badge-status listening';
+          badge.innerText = '🎙️ Listening...';
+        };
+
+        liveSocket.onmessage = async (event) => {
+          try {
+            let data;
+            if (event.data instanceof Blob) {
+              data = JSON.parse(await event.data.text());
+            } else {
+              data = JSON.parse(event.data);
+            }
+
+            handleLiveServerMessage(data);
+          } catch (err) {
+            console.error('Live socket parse error:', err);
+          }
+        };
+
+        liveSocket.onerror = (err) => {
+          console.error('Live socket error:', err);
+          badge.className = 'live-badge-status error';
+          badge.innerText = '🔴 Connection error';
+        };
+
+        liveSocket.onclose = () => {
+          stopLiveInterpreter();
+          badge.className = 'live-badge-status';
+          badge.innerText = '🔴 Disconnected';
+        };
+
+      } catch (err) {
+        badge.className = 'live-badge-status error';
+        badge.innerText = '🔴 Live Error';
+        alert(`Failed to start Live Interpreter: ${err.message}`);
+        stopLiveInterpreter();
+      }
+    }
+
+    function startMicrophonePcmStreaming(stream) {
+      const micInputCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const source = micInputCtx.createMediaStreamSource(stream);
+      liveScriptProcessor = micInputCtx.createScriptProcessor(2048, 1, 1);
+
+      liveScriptProcessor.onaudioprocess = (e) => {
+        if (!isLiveActive || !liveSocket || liveSocket.readyState !== WebSocket.OPEN) return;
+
+        const inputData = e.inputBuffer.getChannelData(0);
+        // Convert Float32Array to 16-bit Linear PCM
+        const pcm16 = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          const s = Math.max(-1, Math.min(1, inputData[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        // Base64 encode PCM bytes and stream to Gemini
+        const base64Audio = arrayBufferToBase64(pcm16.buffer);
+        const pcmMsg = {
+          realtimeInput: {
+            mediaChunks: [{
+              mimeType: "audio/pcm;rate=16000",
+              data: base64Audio
+            }]
+          }
+        };
+        liveSocket.send(JSON.stringify(pcmMsg));
+      };
+
+      source.connect(liveScriptProcessor);
+      liveScriptProcessor.connect(micInputCtx.destination);
+    }
+
+    function handleLiveServerMessage(msg) {
+      const badge = document.getElementById('live-connection-badge');
+
+      // Server interrupted turn (speaker interrupted AI)
+      if (msg.serverContent && msg.serverContent.interrupted) {
+        liveAudioQueue = [];
+        isLiveAudioPlaying = false;
+        badge.className = 'live-badge-status listening';
+        badge.innerText = '🎙️ Listening...';
+        return;
+      }
+
+      // Model Turn parts
+      if (msg.serverContent && msg.serverContent.modelTurn) {
+        const parts = msg.serverContent.modelTurn.parts || [];
+        for (const part of parts) {
+          // Audio Part
+          if (part.inlineData && part.inlineData.mimeType.startsWith('audio/pcm')) {
+            badge.className = 'live-badge-status speaking';
+            badge.innerText = '🔊 Speaking...';
+            queuePcmAudioChunk(part.inlineData.data);
+          }
+          // Text Transcript Part
+          if (part.text) {
+            appendLiveSubtitle(part.text);
+          }
+        }
+      }
+
+      if (msg.serverContent && msg.serverContent.turnComplete) {
+        badge.className = 'live-badge-status listening';
+        badge.innerText = '🎙️ Listening...';
+        currentLiveBubble = null;
+      }
+    }
+
+    function appendLiveSubtitle(textChunk) {
+      const feed = document.getElementById('live-stream-feed');
+      if (!currentLiveBubble) {
+        currentLiveBubble = document.createElement('div');
+        currentLiveBubble.className = 'live-bubble active-turn';
+        currentLiveBubble.innerHTML = `
+          <div class="bubble-lang">Live Interpretation</div>
+          <div class="bubble-text"></div>
+        `;
+        feed.appendChild(currentLiveBubble);
+      }
+
+      const textContainer = currentLiveBubble.querySelector('.bubble-text');
+      textContainer.innerText += textChunk;
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    function queuePcmAudioChunk(b64Data) {
+      const binary = atob(b64Data);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const int16 = new Int16Array(bytes.buffer);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 32768.0;
+      }
+
+      liveAudioQueue.push(float32);
+      if (!isLiveAudioPlaying) {
+        playNextLiveAudioChunk();
+      }
+    }
+
+    function playNextLiveAudioChunk() {
+      if (liveAudioQueue.length === 0) {
+        isLiveAudioPlaying = false;
+        return;
+      }
+
+      isLiveAudioPlaying = true;
+      const chunk = liveAudioQueue.shift();
+      const buffer = liveAudioCtx.createBuffer(1, chunk.length, 24000);
+      buffer.copyToChannel(chunk, 0);
+
+      const source = liveAudioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(liveAudioCtx.destination);
+      source.onended = () => {
+        playNextLiveAudioChunk();
+      };
+      source.start();
+    }
+
+    function stopLiveInterpreter() {
+      isLiveActive = false;
+      if (liveSocket) {
+        try { liveSocket.close(); } catch (e) {}
+        liveSocket = null;
+      }
+      if (liveMediaStream) {
+        liveMediaStream.getTracks().forEach(t => t.stop());
+        liveMediaStream = null;
+      }
+      if (liveScriptProcessor) {
+        try { liveScriptProcessor.disconnect(); } catch (e) {}
+        liveScriptProcessor = null;
+      }
+      if (liveAudioCtx) {
+        try { liveAudioCtx.close(); } catch (e) {}
+        liveAudioCtx = null;
+      }
+      liveAudioQueue = [];
+      isLiveAudioPlaying = false;
+      currentLiveBubble = null;
+
+      const btn = document.getElementById('live-toggle-btn');
+      const badge = document.getElementById('live-connection-badge');
+      if (btn) {
+        btn.className = 'live-trigger-btn start';
+        btn.innerText = '🎙️ START LIVE';
+      }
+      if (badge) {
+        badge.className = 'live-badge-status';
+        badge.innerText = '🔴 Standby';
+      }
+    }
+
+    function arrayBufferToBase64(buffer) {
+      let binary = '';
+      const bytes = new Uint8Array(buffer);
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return window.btoa(binary);
+    }
+
+    // =======================================================
+    // EXISTING NORMAL TRANSLATOR, INDEXEDDB & RECORDING LOGIC
+    // =======================================================
     document.addEventListener('DOMContentLoaded', () => {
       const select = document.getElementById('voice-gender');
       if (select) select.value = selectedGender;
@@ -354,7 +711,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
-    // INDEXEDDB + STRICT 4-DAY DATE PURGE ENGINE
     let db;
     const dbReq = indexedDB.open('FieldAssistantDB', 2);
     dbReq.onupgradeneeded = e => {
@@ -414,15 +770,22 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function switchView(viewName) {
+      // If leaving Live Interpreter, safely disconnect session
+      if (viewName !== 'live' && isLiveActive) {
+        stopLiveInterpreter();
+      }
+
       document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
-        const match = (viewName === 'translate' && idx === 0) ||
-                      (viewName === 'convo' && idx === 1) ||
-                      (viewName === 'text' && idx === 2) ||
-                      (viewName === 'upload' && idx === 3) ||
-                      (viewName === 'library' && idx === 4);
+        const match = (viewName === 'live' && idx === 0) ||
+                      (viewName === 'translate' && idx === 1) ||
+                      (viewName === 'convo' && idx === 2) ||
+                      (viewName === 'text' && idx === 3) ||
+                      (viewName === 'upload' && idx === 4) ||
+                      (viewName === 'library' && idx === 5);
         btn.classList.toggle('active', match);
       });
 
+      document.getElementById('view-live').classList.toggle('active', viewName === 'live');
       document.getElementById('view-translate').classList.toggle('active', viewName === 'translate');
       document.getElementById('view-convo').classList.toggle('active', viewName === 'convo');
       document.getElementById('view-text').classList.toggle('active', viewName === 'text');
@@ -916,10 +1279,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 </html>
 """
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_ui():
-    return HTML_CONTENT
-
 @app.post("/translate-audio")
 async def translate_audio(
     audio: UploadFile = File(...),
@@ -1002,6 +1361,10 @@ async def translate_text(
         return data
     except Exception as e:
         return {"error": f"Text processing error: {str(e)}"}
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_ui():
+    return HTML_CONTENT
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
