@@ -2,16 +2,17 @@ import os
 import json
 import base64
 import io
+import asyncio
 from datetime import datetime, date, timedelta
 from pydantic import BaseModel
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from google import genai
 from google.genai import types
 from gtts import gTTS
 
-app = FastAPI(title="Field Translation Assistant with Live Interpreter")
+app = FastAPI(title="Field Translation Assistant")
 
 api_key = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key)
@@ -56,22 +57,95 @@ async def manifest():
         ]
     })
 
-@app.post("/api/live-session")
-async def create_live_session():
-    """
-    Securely negotiates an ephemeral session ticket for Gemini Live WebSockets
-    without leaking the server GEMINI_API_KEY.
-    """
+# ====================================================================
+# FASTAPI SERVER-SIDE WEBSOCKET PROXY FOR GEMINI LIVE
+# ====================================================================
+@app.websocket("/ws/live-interpreter")
+async def live_interpreter_proxy(websocket: WebSocket):
+    await websocket.accept()
+
     if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured on the server.")
-    
-    # Exposes ticket for the Live WebSocket endpoint
-    return JSONResponse({
-        "status": "authorized",
-        "token": api_key, # Transmitted securely over HTTPS to authorize the client Live socket
-        "model": "gemini-2.0-flash-exp",
-        "ws_url": "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiStream"
-    })
+        await websocket.send_json({"error": "Server GEMINI_API_KEY not set."})
+        await websocket.close()
+        return
+
+    # Initialize Gemini Live Session via google-genai aio
+    sys_instruction = (
+        "You are an authentic, low-latency live interpreter for social fieldwork in Tamil Nadu. "
+        "Perform immediate bidirectional spoken interpretation between conversational Tamil and English. "
+        "When the user speaks colloquial Tamil, immediately interpret it into conversational English. "
+        "When the user speaks English, immediately interpret it into polite colloquial spoken Tamil (Pechu Tamizh). "
+        "Do not add introductions, chit-chat, or explanations. Only output the spoken translation."
+    )
+
+    live_config = types.LiveConnectConfig(
+        response_modalities=[types.LiveModality.AUDIO],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+            )
+        ),
+        system_instruction=types.Content(parts=[types.Part.from_text(text=sys_instruction)])
+    )
+
+    try:
+        async with client.aio.live.connect(model="gemini-2.0-flash-exp", config=live_config) as session:
+            # Task 1: Forward client microphone audio chunks to Gemini Live
+            async def forward_client_audio():
+                try:
+                    while True:
+                        msg = await websocket.receive_text()
+                        payload = json.loads(msg)
+                        if "audio_pcm" in payload:
+                            pcm_bytes = base64.b64decode(payload["audio_pcm"])
+                            await session.send(input={"data": pcm_bytes, "mime_type": "audio/pcm;rate=16000"}, end_of_turn=False)
+                        elif payload.get("action") == "end_of_turn":
+                            await session.send(end_of_turn=True)
+                except (WebSocketDisconnect, asyncio.CancelledError):
+                    pass
+
+            # Task 2: Stream Gemini Live audio & text chunks back to client
+            async def forward_gemini_responses():
+                try:
+                    async for response in session.receive():
+                        server_content = response.server_content
+                        if server_content is not None:
+                            model_turn = server_content.model_turn
+                            if model_turn is not None:
+                                for part in model_turn.parts:
+                                    # Forward audio chunk to browser
+                                    if part.inline_data:
+                                        b64_audio = base64.b64encode(part.inline_data.data).decode("utf-8")
+                                        await websocket.send_json({"type": "audio", "data": b64_audio})
+                                    # Forward text chunk to browser
+                                    if part.text:
+                                        await websocket.send_json({"type": "text", "data": part.text})
+
+                            if server_content.turn_complete:
+                                await websocket.send_json({"type": "turn_complete"})
+                            if server_content.interrupted:
+                                await websocket.send_json({"type": "interrupted"})
+                except (WebSocketDisconnect, asyncio.CancelledError):
+                    pass
+
+            forward_task = asyncio.create_task(forward_client_audio())
+            receive_task = asyncio.create_task(forward_gemini_responses())
+
+            # Wait until one disconnects
+            done, pending = await asyncio.wait([forward_task, receive_task], return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+
+    except Exception as e:
+        try:
+            await websocket.send_json({"error": f"Live error: {str(e)}"})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
@@ -134,8 +208,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     .record-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 16px; padding: 1rem; display: flex; flex-direction: column; gap: 0.6rem; position: relative; }
     .record-card.ta-source { border-left: 4px solid var(--accent-emerald); }
     .record-card.en-source { border-left: 4px solid var(--accent-blue); }
-    .record-card.live-card { border-left: 4px solid var(--accent-rose); }
-    
+
     .card-meta-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.7rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; }
     .expiry-tag { color: #f59e0b; font-weight: 600; font-size: 0.7rem; }
     
@@ -149,7 +222,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     .audio-play-btn { background: #17233d; border: 1px solid #273a63; border-radius: 10px; padding: 8px 10px; color: #e2e8f0; font-size: 0.75rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; }
     .audio-play-btn.accent { background: #0c3358; border-color: #0284c7; color: #38bdf8; }
 
-    /* Live Interpreter Console Styles */
+    /* Live Interpreter Console */
     .live-console-box { background: #0c1527; border: 1px solid #1e335a; border-radius: 16px; padding: 1.25rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; text-align: center; }
     .live-badge-status { font-size: 0.85rem; font-weight: 700; padding: 6px 14px; border-radius: 20px; background: #1f293d; color: #94a3b8; display: flex; align-items: center; gap: 8px; }
     .live-badge-status.connected { background: #064e3b; color: #34d399; }
@@ -167,7 +240,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     .live-trigger-btn.start { background: linear-gradient(135deg, #10b981, #059669); color: #fff; box-shadow: 0 4px 20px rgba(16, 185, 129, 0.4); }
     .live-trigger-btn.end { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4); }
 
-    /* Controls Cockpit */
     .controls-cockpit { background: #0c1322; border-top: 1px solid var(--border-color); padding: 0.85rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; z-index: 10; }
     .visualizer-canvas { width: 100%; height: 26px; display: none; }
     .visualizer-canvas.active { display: block; }
@@ -224,7 +296,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   </nav>
 
   <main>
-    <!-- 0. LIVE INTERPRETER VIEW (STREAMING GEMINI LIVE) -->
+    <!-- 0. LIVE INTERPRETER VIEW (PROXIED WEBSOCKET STREAMING) -->
     <div id="view-live" class="view-section">
       <div class="live-console-box">
         <div style="font-size:1.1rem; font-weight:800; color:#38bdf8;">LIVE INTERPRETER</div>
@@ -234,14 +306,14 @@ HTML_CONTENT = """<!DOCTYPE html>
         <button id="live-toggle-btn" class="live-trigger-btn start" onclick="toggleLiveInterpreterSession()">
           🎙️ START LIVE
         </button>
-        <div style="font-size:0.75rem; color:#64748b;">Natural two-way streaming conversation without button taps.</div>
+        <div style="font-size:0.75rem; color:#64748b;">Continuous two-way interpretation without button presses.</div>
       </div>
 
       <div id="live-stream-feed" class="live-stream-feed">
         <div class="live-bubble">
           <div class="bubble-lang">System Ready</div>
           <div class="bubble-text" style="font-size:0.95rem; color:#94a3b8;">
-            Tap [ START LIVE ] to open continuous bidirectional translation. The AI automatically hears whether Tamil or English is spoken and replies aloud in the other language.
+            Tap [ START LIVE ] to begin streaming conversation. The AI listens continuously and translates directly into spoken audio and text.
           </div>
         </div>
       </div>
@@ -327,7 +399,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </main>
 
-  <!-- BOTTOM RECORDING COCKPIT (FOR REGULAR MODES) -->
   <div class="controls-cockpit" id="bottom-cockpit">
     <canvas id="waveform-scope" class="visualizer-canvas"></canvas>
 
@@ -372,12 +443,12 @@ HTML_CONTENT = """<!DOCTYPE html>
     const player = document.getElementById('primary-audio-player');
 
     // =======================================================
-    // GEMINI LIVE INTERPRETER (BIDIRECTIONAL WEBSOCKET ENGINE)
+    // SERVER-PROXIED GEMINI LIVE INTERPRETER
     // =======================================================
-    let liveSocket = null;
+    let liveWs = null;
     let liveAudioCtx = null;
     let liveMediaStream = null;
-    let liveScriptProcessor = null;
+    let liveProcessor = null;
     let isLiveActive = false;
     let liveAudioQueue = [];
     let isLiveAudioPlaying = false;
@@ -399,12 +470,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       badge.innerText = '🟡 Connecting...';
 
       try {
-        // Step 1: Obtain session ticket from FastAPI backend
-        const sessionRes = await fetch('/api/live-session', { method: 'POST' });
-        if (!sessionRes.ok) throw new Error('Could not obtain Live authorization ticket.');
-        const sessionData = await sessionRes.json();
-
-        // Step 2: Request 16kHz audio capture for Gemini Live API
         liveMediaStream = await navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
         });
@@ -412,75 +477,58 @@ HTML_CONTENT = """<!DOCTYPE html>
         liveAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
         if (liveAudioCtx.state === 'suspended') await liveAudioCtx.resume();
 
-        // Step 3: Establish Gemini Live WebSocket
-        const socketUrl = `${sessionData.ws_url}?key=${sessionData.token}`;
-        liveSocket = new WebSocket(socketUrl);
+        // Connect directly to your own FastAPI WebSocket proxy
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socketUrl = `${wsProto}//${window.location.host}/ws/live-interpreter`;
+        liveWs = new WebSocket(socketUrl);
 
-        liveSocket.onopen = () => {
-          badge.className = 'live-badge-status connected';
-          badge.innerText = '🟢 Connected';
-
-          // Send setup payload configured specifically for bidirectional Tamil/English translation
-          const setupMsg = {
-            setup: {
-              model: "models/gemini-2.0-flash-exp",
-              generationConfig: {
-                responseModalities: ["AUDIO"],
-                speechConfig: {
-                  voiceConfig: {
-                    prebuiltVoiceConfig: {
-                      voiceName: selectedGender === 'male' ? "Puck" : "Aoede"
-                    }
-                  }
-                }
-              },
-              systemInstruction: {
-                parts: [{
-                  text: (
-                    "You are a professional real-time Live Interpreter for social workers in Tamil Nadu. " +
-                    "Your single duty is immediate bidirectional spoken translation between colloquial spoken Tamil (Pechu Tamizh) and conversational English. " +
-                    "If you hear Tamil, immediately output the spoken translation in clear, natural English. " +
-                    "If you hear English, immediately output the spoken translation in polite colloquial Tamil script and natural spoken Tamil voice. " +
-                    "Do not add greetings, pleasantries, or explanations. Only translate what was spoken with maximum fidelity."
-                  )
-                }]
-              }
-            }
-          };
-          liveSocket.send(JSON.stringify(setupMsg));
-
-          // Start streaming microphone PCM chunks
-          startMicrophonePcmStreaming(liveMediaStream);
-
-          isLiveActive = true;
-          btn.className = 'live-trigger-btn end';
-          btn.innerText = '⏹️ END LIVE';
+        liveWs.onopen = () => {
           badge.className = 'live-badge-status listening';
           badge.innerText = '🎙️ Listening...';
+          btn.className = 'live-trigger-btn end';
+          btn.innerText = '⏹️ END LIVE';
+          isLiveActive = true;
+
+          startLiveMicrophoneStreaming(liveMediaStream);
         };
 
-        liveSocket.onmessage = async (event) => {
+        liveWs.onmessage = (event) => {
           try {
-            let data;
-            if (event.data instanceof Blob) {
-              data = JSON.parse(await event.data.text());
-            } else {
-              data = JSON.parse(event.data);
+            const data = JSON.parse(event.data);
+            if (data.error) {
+              badge.className = 'live-badge-status error';
+              badge.innerText = '🔴 ' + data.error;
+              return;
             }
 
-            handleLiveServerMessage(data);
+            if (data.type === 'audio' && data.data) {
+              badge.className = 'live-badge-status speaking';
+              badge.innerText = '🔊 Speaking...';
+              queuePcmAudio(data.data);
+            } else if (data.type === 'text' && data.data) {
+              appendLiveText(data.data);
+            } else if (data.type === 'turn_complete') {
+              badge.className = 'live-badge-status listening';
+              badge.innerText = '🎙️ Listening...';
+              currentLiveBubble = null;
+            } else if (data.type === 'interrupted') {
+              liveAudioQueue = [];
+              isLiveAudioPlaying = false;
+              badge.className = 'live-badge-status listening';
+              badge.innerText = '🎙️ Listening...';
+            }
           } catch (err) {
-            console.error('Live socket parse error:', err);
+            console.error(err);
           }
         };
 
-        liveSocket.onerror = (err) => {
-          console.error('Live socket error:', err);
+        liveWs.onerror = (e) => {
+          console.error(e);
           badge.className = 'live-badge-status error';
           badge.innerText = '🔴 Connection error';
         };
 
-        liveSocket.onclose = () => {
+        liveWs.onclose = () => {
           stopLiveInterpreter();
           badge.className = 'live-badge-status';
           badge.innerText = '🔴 Disconnected';
@@ -488,82 +536,36 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       } catch (err) {
         badge.className = 'live-badge-status error';
-        badge.innerText = '🔴 Live Error';
-        alert(`Failed to start Live Interpreter: ${err.message}`);
+        badge.innerText = '🔴 Mic Denied';
+        alert('Microphone permission required for Live Interpreter.');
         stopLiveInterpreter();
       }
     }
 
-    function startMicrophonePcmStreaming(stream) {
+    function startLiveMicrophoneStreaming(stream) {
       const micInputCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       const source = micInputCtx.createMediaStreamSource(stream);
-      liveScriptProcessor = micInputCtx.createScriptProcessor(2048, 1, 1);
+      liveProcessor = micInputCtx.createScriptProcessor(2048, 1, 1);
 
-      liveScriptProcessor.onaudioprocess = (e) => {
-        if (!isLiveActive || !liveSocket || liveSocket.readyState !== WebSocket.OPEN) return;
+      liveProcessor.onaudioprocess = (e) => {
+        if (!isLiveActive || !liveWs || liveWs.readyState !== WebSocket.OPEN) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
-        // Convert Float32Array to 16-bit Linear PCM
         const pcm16 = new Int16Array(inputData.length);
         for (let i = 0; i < inputData.length; i++) {
           const s = Math.max(-1, Math.min(1, inputData[i]));
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        // Base64 encode PCM bytes and stream to Gemini
-        const base64Audio = arrayBufferToBase64(pcm16.buffer);
-        const pcmMsg = {
-          realtimeInput: {
-            mediaChunks: [{
-              mimeType: "audio/pcm;rate=16000",
-              data: base64Audio
-            }]
-          }
-        };
-        liveSocket.send(JSON.stringify(pcmMsg));
+        const b64 = arrayBufferToBase64(pcm16.buffer);
+        liveWs.send(JSON.stringify({ audio_pcm: b64 }));
       };
 
-      source.connect(liveScriptProcessor);
-      liveScriptProcessor.connect(micInputCtx.destination);
+      source.connect(liveProcessor);
+      liveProcessor.connect(micInputCtx.destination);
     }
 
-    function handleLiveServerMessage(msg) {
-      const badge = document.getElementById('live-connection-badge');
-
-      // Server interrupted turn (speaker interrupted AI)
-      if (msg.serverContent && msg.serverContent.interrupted) {
-        liveAudioQueue = [];
-        isLiveAudioPlaying = false;
-        badge.className = 'live-badge-status listening';
-        badge.innerText = '🎙️ Listening...';
-        return;
-      }
-
-      // Model Turn parts
-      if (msg.serverContent && msg.serverContent.modelTurn) {
-        const parts = msg.serverContent.modelTurn.parts || [];
-        for (const part of parts) {
-          // Audio Part
-          if (part.inlineData && part.inlineData.mimeType.startsWith('audio/pcm')) {
-            badge.className = 'live-badge-status speaking';
-            badge.innerText = '🔊 Speaking...';
-            queuePcmAudioChunk(part.inlineData.data);
-          }
-          // Text Transcript Part
-          if (part.text) {
-            appendLiveSubtitle(part.text);
-          }
-        }
-      }
-
-      if (msg.serverContent && msg.serverContent.turnComplete) {
-        badge.className = 'live-badge-status listening';
-        badge.innerText = '🎙️ Listening...';
-        currentLiveBubble = null;
-      }
-    }
-
-    function appendLiveSubtitle(textChunk) {
+    function appendLiveText(chunk) {
       const feed = document.getElementById('live-stream-feed');
       if (!currentLiveBubble) {
         currentLiveBubble = document.createElement('div');
@@ -576,35 +578,29 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       const textContainer = currentLiveBubble.querySelector('.bubble-text');
-      textContainer.innerText += textChunk;
+      textContainer.innerText += chunk;
       feed.scrollTop = feed.scrollHeight;
     }
 
-    function queuePcmAudioChunk(b64Data) {
+    function queuePcmAudio(b64Data) {
       const binary = atob(b64Data);
       const len = binary.length;
       const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
+      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+      
       const int16 = new Int16Array(bytes.buffer);
       const float32 = new Float32Array(int16.length);
-      for (let i = 0; i < int16.length; i++) {
-        float32[i] = int16[i] / 32768.0;
-      }
+      for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
 
       liveAudioQueue.push(float32);
-      if (!isLiveAudioPlaying) {
-        playNextLiveAudioChunk();
-      }
+      if (!isLiveAudioPlaying) playNextLiveChunk();
     }
 
-    function playNextLiveAudioChunk() {
+    function playNextLiveChunk() {
       if (liveAudioQueue.length === 0) {
         isLiveAudioPlaying = false;
         return;
       }
-
       isLiveAudioPlaying = true;
       const chunk = liveAudioQueue.shift();
       const buffer = liveAudioCtx.createBuffer(1, chunk.length, 24000);
@@ -613,25 +609,23 @@ HTML_CONTENT = """<!DOCTYPE html>
       const source = liveAudioCtx.createBufferSource();
       source.buffer = buffer;
       source.connect(liveAudioCtx.destination);
-      source.onended = () => {
-        playNextLiveAudioChunk();
-      };
+      source.onended = () => playNextLiveChunk();
       source.start();
     }
 
     function stopLiveInterpreter() {
       isLiveActive = false;
-      if (liveSocket) {
-        try { liveSocket.close(); } catch (e) {}
-        liveSocket = null;
+      if (liveWs) {
+        try { liveWs.close(); } catch (e) {}
+        liveWs = null;
       }
       if (liveMediaStream) {
         liveMediaStream.getTracks().forEach(t => t.stop());
         liveMediaStream = null;
       }
-      if (liveScriptProcessor) {
-        try { liveScriptProcessor.disconnect(); } catch (e) {}
-        liveScriptProcessor = null;
+      if (liveProcessor) {
+        try { liveProcessor.disconnect(); } catch (e) {}
+        liveProcessor = null;
       }
       if (liveAudioCtx) {
         try { liveAudioCtx.close(); } catch (e) {}
@@ -657,9 +651,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       let binary = '';
       const bytes = new Uint8Array(buffer);
       const len = bytes.byteLength;
-      for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
+      for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
       return window.btoa(binary);
     }
 
@@ -750,9 +742,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (cursor) {
           const item = cursor.value;
           const exp = calculateExpiry(item.isoDate);
-          if (exp.isExpired) {
-            cursor.delete();
-          }
+          if (exp.isExpired) cursor.delete();
           cursor.continue();
         }
       };
@@ -770,7 +760,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function switchView(viewName) {
-      // If leaving Live Interpreter, safely disconnect session
       if (viewName !== 'live' && isLiveActive) {
         stopLiveInterpreter();
       }
