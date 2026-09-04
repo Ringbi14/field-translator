@@ -65,17 +65,16 @@ async def live_interpreter_proxy(websocket: WebSocket):
     await websocket.accept()
 
     if not api_key:
-        await websocket.send_json({"error": "Server GEMINI_API_KEY not set."})
+        await websocket.send_json({"error": "Server GEMINI_API_KEY is not set."})
         await websocket.close()
         return
 
-    # Initialize Gemini Live Session via google-genai aio
     sys_instruction = (
-        "You are an authentic, low-latency live interpreter for social fieldwork in Tamil Nadu. "
-        "Perform immediate bidirectional spoken interpretation between conversational Tamil and English. "
-        "When the user speaks colloquial Tamil, immediately interpret it into conversational English. "
-        "When the user speaks English, immediately interpret it into polite colloquial spoken Tamil (Pechu Tamizh). "
-        "Do not add introductions, chit-chat, or explanations. Only output the spoken translation."
+        "You are an authentic, ultra-low-latency real-time interpreter for social fieldwork in Tamil Nadu. "
+        "Your task is bidirectional spoken interpretation between colloquial spoken Tamil (Pechu Tamizh) and natural conversational English. "
+        "1. If you hear Tamil speech, immediately translate it into clear, simple conversational English. "
+        "2. If you hear English speech, immediately translate it into polite colloquial spoken Tamil (பேச்சுத் தமிழ்). "
+        "Never add pleasantries, explanations, or meta commentary. Speak only the direct translation."
     )
 
     live_config = types.LiveConnectConfig(
@@ -89,23 +88,27 @@ async def live_interpreter_proxy(websocket: WebSocket):
     )
 
     try:
-        async with client.aio.live.connect(model="gemini-2.0-flash-exp", config=live_config) as session:
-            # Task 1: Forward client microphone audio chunks to Gemini Live
-            async def forward_client_audio():
+        # Use supported live model with client.aio.live.connect
+        async with client.aio.live.connect(model="gemini-2.0-flash", config=live_config) as session:
+            await websocket.send_json({"type": "session_ready"})
+
+            async def client_to_gemini():
                 try:
                     while True:
-                        msg = await websocket.receive_text()
-                        payload = json.loads(msg)
+                        raw_msg = await websocket.receive_text()
+                        payload = json.loads(raw_msg)
                         if "audio_pcm" in payload:
                             pcm_bytes = base64.b64decode(payload["audio_pcm"])
-                            await session.send(input={"data": pcm_bytes, "mime_type": "audio/pcm;rate=16000"}, end_of_turn=False)
-                        elif payload.get("action") == "end_of_turn":
-                            await session.send(end_of_turn=True)
+                            # Send real-time audio chunk through official SDK method
+                            await session.send_realtime_input(
+                                media=types.Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000")
+                            )
                 except (WebSocketDisconnect, asyncio.CancelledError):
                     pass
+                except Exception as e:
+                    print(f"Error forwarding client audio: {e}")
 
-            # Task 2: Stream Gemini Live audio & text chunks back to client
-            async def forward_gemini_responses():
+            async def gemini_to_client():
                 try:
                     async for response in session.receive():
                         server_content = response.server_content
@@ -113,11 +116,9 @@ async def live_interpreter_proxy(websocket: WebSocket):
                             model_turn = server_content.model_turn
                             if model_turn is not None:
                                 for part in model_turn.parts:
-                                    # Forward audio chunk to browser
                                     if part.inline_data:
                                         b64_audio = base64.b64encode(part.inline_data.data).decode("utf-8")
                                         await websocket.send_json({"type": "audio", "data": b64_audio})
-                                    # Forward text chunk to browser
                                     if part.text:
                                         await websocket.send_json({"type": "text", "data": part.text})
 
@@ -127,18 +128,20 @@ async def live_interpreter_proxy(websocket: WebSocket):
                                 await websocket.send_json({"type": "interrupted"})
                 except (WebSocketDisconnect, asyncio.CancelledError):
                     pass
+                except Exception as e:
+                    print(f"Error forwarding gemini stream: {e}")
 
-            forward_task = asyncio.create_task(forward_client_audio())
-            receive_task = asyncio.create_task(forward_gemini_responses())
+            task1 = asyncio.create_task(client_to_gemini())
+            task2 = asyncio.create_task(gemini_to_client())
 
-            # Wait until one disconnects
-            done, pending = await asyncio.wait([forward_task, receive_task], return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait([task1, task2], return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
                 t.cancel()
 
     except Exception as e:
+        print(f"Live session initialization error: {e}")
         try:
-            await websocket.send_json({"error": f"Live error: {str(e)}"})
+            await websocket.send_json({"error": f"Session error: {str(e)}"})
         except Exception:
             pass
     finally:
@@ -171,7 +174,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       --accent-blue: #0284c7;
       --accent-emerald: #10b981;
       --accent-rose: #f43f5e;
-      --accent-amber: #f59e0b;
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
     }
@@ -296,7 +298,6 @@ HTML_CONTENT = """<!DOCTYPE html>
   </nav>
 
   <main>
-    <!-- 0. LIVE INTERPRETER VIEW (PROXIED WEBSOCKET STREAMING) -->
     <div id="view-live" class="view-section">
       <div class="live-console-box">
         <div style="font-size:1.1rem; font-weight:800; color:#38bdf8;">LIVE INTERPRETER</div>
@@ -319,7 +320,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- 1. LIVE TRANSLATE VIEW (WALKIE-TALKIE) -->
     <div id="view-translate" class="view-section active">
       <div class="direction-container">
         <button id="main-dir-ta" class="dir-toggle-btn active" onclick="setDirection('ta_to_en')">Tamil ➔ English</button>
@@ -338,7 +338,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- 2. CONVERSATION VIEW -->
     <div id="view-convo" class="view-section">
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <span style="font-size:0.8rem; color:var(--text-muted); font-weight:700;">CONVERSATION MODE</span>
@@ -347,7 +346,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div id="convo-feed" class="feed-container"></div>
     </div>
 
-    <!-- 3. TEXT TRANSLATE VIEW -->
     <div id="view-text" class="view-section">
       <div class="direction-container">
         <button id="text-dir-ta" class="dir-toggle-btn active" onclick="setTextDirection('ta_to_en')">Tamil ➔ English</button>
@@ -371,7 +369,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- 4. UPLOAD AUDIO FILE VIEW -->
     <div id="view-upload" class="view-section">
       <div class="direction-container">
         <button id="upload-dir-ta" class="dir-toggle-btn active" onclick="setUploadDirection('ta_to_en')">Tamil Audio ➔ English</button>
@@ -389,7 +386,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div id="upload-status" class="cockpit-status" style="justify-content:center;"></div>
     </div>
 
-    <!-- 5. 4-DAY SAVED RECORDINGS LIBRARY -->
     <div id="view-library" class="view-section">
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <span style="font-size:0.8rem; color:#94a3b8;">Recordings Auto-Delete After 4 Days</span>
@@ -450,6 +446,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     let liveMediaStream = null;
     let liveProcessor = null;
     let isLiveActive = false;
+    let isSessionReady = false;
     let liveAudioQueue = [];
     let isLiveAudioPlaying = false;
     let currentLiveBubble = null;
@@ -468,6 +465,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       badge.className = 'live-badge-status';
       badge.innerText = '🟡 Connecting...';
+      isSessionReady = false;
 
       try {
         liveMediaStream = await navigator.mediaDevices.getUserMedia({
@@ -477,19 +475,13 @@ HTML_CONTENT = """<!DOCTYPE html>
         liveAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
         if (liveAudioCtx.state === 'suspended') await liveAudioCtx.resume();
 
-        // Connect directly to your own FastAPI WebSocket proxy
         const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const socketUrl = `${wsProto}//${window.location.host}/ws/live-interpreter`;
         liveWs = new WebSocket(socketUrl);
 
         liveWs.onopen = () => {
-          badge.className = 'live-badge-status listening';
-          badge.innerText = '🎙️ Listening...';
-          btn.className = 'live-trigger-btn end';
-          btn.innerText = '⏹️ END LIVE';
-          isLiveActive = true;
-
-          startLiveMicrophoneStreaming(liveMediaStream);
+          badge.className = 'live-badge-status';
+          badge.innerText = '🟡 Handshake...';
         };
 
         liveWs.onmessage = (event) => {
@@ -501,7 +493,15 @@ HTML_CONTENT = """<!DOCTYPE html>
               return;
             }
 
-            if (data.type === 'audio' && data.data) {
+            if (data.type === 'session_ready') {
+              isSessionReady = true;
+              isLiveActive = true;
+              badge.className = 'live-badge-status listening';
+              badge.innerText = '🎙️ Listening...';
+              btn.className = 'live-trigger-btn end';
+              btn.innerText = '⏹️ END LIVE';
+              startLiveMicrophoneStreaming(liveMediaStream);
+            } else if (data.type === 'audio' && data.data) {
               badge.className = 'live-badge-status speaking';
               badge.innerText = '🔊 Speaking...';
               queuePcmAudio(data.data);
@@ -545,10 +545,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     function startLiveMicrophoneStreaming(stream) {
       const micInputCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       const source = micInputCtx.createMediaStreamSource(stream);
-      liveProcessor = micInputCtx.createScriptProcessor(2048, 1, 1);
+      liveProcessor = micInputCtx.createScriptProcessor(4096, 1, 1);
 
       liveProcessor.onaudioprocess = (e) => {
-        if (!isLiveActive || !liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+        if (!isLiveActive || !isSessionReady || !liveWs || liveWs.readyState !== WebSocket.OPEN) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
         const pcm16 = new Int16Array(inputData.length);
@@ -615,6 +615,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function stopLiveInterpreter() {
       isLiveActive = false;
+      isSessionReady = false;
       if (liveWs) {
         try { liveWs.close(); } catch (e) {}
         liveWs = null;
@@ -881,7 +882,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         recordTimer = setInterval(() => {
           elapsedSeconds++;
           const mins = String(Math.floor(elapsedSeconds / 60)).padStart(2, '0');
-          const secs = String(elapsedSeconds % 60).padStart(2, '0');
+          const secs = String(recordSeconds % 60).padStart(2, '0');
           document.getElementById('status-readout').innerText = `${isDraftMode ? 'Saving Audio' : 'Listening'} (${mins}:${secs})`;
         }, 1000);
 
